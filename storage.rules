@@ -1,0 +1,59 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isSelf(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+    function isSmall() {
+      return request.resource.size < 10 * 1024 * 1024;
+    }
+    function isMediaType() {
+      return request.resource.contentType.matches(
+        'image/.*|video/.*|audio/.*|application/pdf|application/octet-stream'
+      );
+    }
+    match /community_logos/{allPaths=**} {
+      allow read: if true;
+      allow write: if isSignedIn() && isSmall() && isMediaType();
+    }
+    match /group_chat_media/{communityId}/{groupId}/{userId}/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isSelf(userId) && isSmall() && isMediaType();
+    }
+    match /chat_media/{chatId}/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isSmall() && isMediaType();
+    }
+    match /chat_media_by_user/{uploaderUid}/{chatId}/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isSelf(uploaderUid) && isSmall() && isMediaType();
+    }
+    match /profilePictures/{userId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if isSelf(userId) && isSmall() && isMediaType();
+    }
+    match /business_covers/{uid}/{allPaths=**} {
+      allow read: if true;
+      allow write: if isSelf(uid) && isSmall() && isMediaType();
+    }
+    match /business_catalog/{uid}/{businessId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if isSignedIn() && isSelf(uid) && isSmall() && isMediaType();
+    }
+    match /activity_memories/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.resource.size < 50 * 1024 * 1024 && isMediaType();
+    }
+    match /activity_chat_media/{activityId}/{userId}/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isSelf(userId) && isSmall() && isMediaType();
+    }
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

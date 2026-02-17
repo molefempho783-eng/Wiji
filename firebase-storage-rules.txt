@@ -1,0 +1,91 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    /* ---------- Helpers ---------- */
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // 10 MB limit (adjust if needed)
+    function isSmall() {
+      return request.resource.size < 10 * 1024 * 1024;
+    }
+
+    // Allow common media & PDFs; include octet-stream for some mobile uploads
+    function isMediaType() {
+      return request.resource.contentType.matches(
+        'image/.*|video/.*|audio/.*|application/pdf|application/octet-stream'
+      );
+    }
+
+    // Verify the uploader owns the business document
+    function isBusinessOwner(businessId) {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/businesses/$(businessId)).data.ownerId
+          == request.auth.uid;
+    }
+
+    /* ---------- Community logos ---------- */
+    match /community_logos/{allPaths=**} {
+      allow read:  if true;
+      allow write: if isSignedIn() && isSmall() && isMediaType();
+    }
+
+    /* ---------- Group chat media ---------- */
+    // Writes only by the path's user; reads by any signed-in user.
+    match /group_chat_media/{communityId}/{groupId}/{userId}/{allPaths=**} {
+      allow read:  if isSignedIn();
+      allow write: if isSelf(userId) && isSmall() && isMediaType();
+    }
+
+    /* ---------- One-to-one chat media ---------- */
+    // Both participants can upload to the same chatId folder
+    match /chat_media/{chatId}/{allPaths=**} {
+      allow read:  if isSignedIn();
+      allow write: if isSignedIn() && isSmall() && isMediaType();
+    }
+
+    // Alternative variant scoped by uploader UID (if you want stricter control):
+    match /chat_media_by_user/{uploaderUid}/{chatId}/{allPaths=**} {
+      allow read:  if isSignedIn();
+      allow write: if isSelf(uploaderUid) && isSmall() && isMediaType();
+    }
+
+    /* ---------- User profile pictures ---------- */
+    match /profilePictures/{userId}/{allPaths=**} {
+      allow read:  if true;
+      allow write: if isSelf(userId) && isSmall() && isMediaType();
+    }
+
+    /* ---------- Business images ---------- */
+    // Cover images
+    match /business_covers/{uid}/{allPaths=**} {
+      allow read:  if true;
+      allow write: if isSelf(uid) && isSmall() && isMediaType();
+    }
+
+    /* ----- Catalog images ----- */
+    // Path: business_catalog/{uid}/{businessId}/{filename}
+    match /business_catalog/{uid}/{businessId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if isSignedIn() && isSelf(uid) && isSmall() && isMediaType();
+    }
+
+    /* ---------- Activity memories (video, visible to everyone within 50km) ---------- */
+    match /activity_memories/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.resource.size < 50 * 1024 * 1024 && isMediaType();
+    }
+
+    /* ---------- Fallback: deny everything else ---------- */
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

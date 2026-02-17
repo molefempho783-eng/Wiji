@@ -1,0 +1,571 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    /* ---------- Helpers ---------- */
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // rider who owns the ride
+    function isRideOwner() {
+      return isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // the driver this ride currently targets (driver_requested state)
+    function isTargetedDriver() {
+      return isSignedIn()
+        && resource.data.driverPreferred is map
+        && resource.data.driverPreferred.id == request.auth.uid;
+    }
+
+    // the driver currently assigned to the ride
+    function isAssignedDriver() {
+      return isSignedIn()
+        && resource.data.driver is map
+        && resource.data.driver.id == request.auth.uid;
+    }
+
+    // convenience: have only these keys changed?
+    function changedOnly(keys) {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly(keys);
+    }
+
+    // Membership via users/{uid}.joinedCommunities (array of community IDs)
+    function isMemberByUserDoc(communityId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.joinedCommunities is list)
+        && (communityId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.joinedCommunities);
+    }
+
+    // Membership via group chat's members array (so users in the group can send/receive even if joinedCommunities missing)
+    function isMemberOfGroupChat(communityId, chatId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/communities/$(communityId)/groupChats/$(chatId))
+        && get(/databases/$(database)/documents/communities/$(communityId)/groupChats/$(chatId)).data.members is list
+        && request.auth.uid in get(/databases/$(database)/documents/communities/$(communityId)/groupChats/$(chatId)).data.members;
+    }
+
+    function isBusinessOwner(businessId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/businesses/$(businessId))
+        && get(/databases/$(database)/documents/businesses/$(businessId)).data.ownerId == request.auth.uid;
+    }
+
+    // Check if user is a chat participant (supports both array and map formats)
+    // For get/update operations
+    function isChatParticipant(chatId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/chats/$(chatId))
+        && (
+          (
+            get(/databases/$(database)/documents/chats/$(chatId)).data.participants is list
+            && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants
+          ) ||
+          (
+            get(/databases/$(database)/documents/chats/$(chatId)).data.participants is map
+            && get(/databases/$(database)/documents/chats/$(chatId)).data.participants[request.auth.uid] == true
+          )
+        );
+    }
+    
+    // Check if user is participant using resource data (for list queries)
+    function isParticipantInResource() {
+      return isSignedIn() 
+        && resource.data.participants != null
+        && (
+          (resource.data.participants is list && request.auth.uid in resource.data.participants) ||
+          (resource.data.participants is map && resource.data.participants[request.auth.uid] == true)
+        );
+    }
+
+    /* ---------- Users ---------- */
+    match /users/{userId} {
+      // allow collection reads & doc reads for everyone
+      allow read: if true;
+      
+      // Owner can create/update their own profile
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      
+      // Update rules:
+      // 1. Owner can update their own profile
+      // 2. Other users can add themselves to the friends map (for friend request acceptance)
+      // Using map structure: friends: { [userId]: true }
+      allow update: if isSignedIn() && (
+        // Owner updating their own document
+        request.auth.uid == userId ||
+        // Other user adding themselves to friends map (friend request acceptance)
+        // Check that we're only setting friends.{auth.uid} = true
+        (
+          // Only the friends field is being updated
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friends']) &&
+          // New friends is a map
+          request.resource.data.friends is map &&
+          // We're setting friends.{auth.uid} = true
+          request.resource.data.friends[request.auth.uid] == true &&
+          // Ensure we're not removing other friends (all existing keys remain, except we're adding auth.uid)
+          (resource.data.friends == null || 
+           !(resource.data.friends is map) ||
+           // All existing friend keys should still be in the new map
+           request.resource.data.friends.keys().hasAll(resource.data.friends.keys()))
+        ) ||
+        // Any user can add one chatId to another user's chatIds (so recipient sees the conversation)
+        (
+          request.resource.data.diff(resource.data).changedKeys().hasOnly(['chatIds']) &&
+          request.resource.data.chatIds is list &&
+          (resource.data.get('chatIds', []) is list || !('chatIds' in resource.data)) &&
+          request.resource.data.chatIds.hasAll(resource.data.get('chatIds', [])) &&
+          request.resource.data.chatIds.size() == resource.data.get('chatIds', []).size() + 1
+        )
+      );
+      allow delete: if false;
+    }
+
+    // Allow users to manage their own wallets
+    match /users/{userId}/wallets/{walletId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /walletTransactions/{transactionId} {
+      allow read: if isSignedIn() && request.auth.uid == resource.data.uid;
+      // writes are only done by backend functions
+      allow create, update, delete: if false;
+    }
+
+    /* ---------- Chats (one-to-one) ---------- */
+    match /chats/{chatId} {
+      // For get/update operations, use isChatParticipant with get()
+      allow get, update: if isChatParticipant(chatId);
+      
+      // For list queries, check resource.data directly (no get() needed)
+      // This works with where("participants", "array-contains") queries
+      allow list: if isSignedIn() && (
+        (resource.data.participants is list && request.auth.uid in resource.data.participants) ||
+        (resource.data.participants is map && resource.data.participants[request.auth.uid] == true)
+      );
+
+      // Create a chat only if you're included in participants (array OR map)
+      allow create: if isSignedIn() && (
+        (
+          request.resource.data.participants is list
+          && request.auth.uid in request.resource.data.participants
+        ) ||
+        (
+          request.resource.data.participants is map
+          && request.resource.data.participants[request.auth.uid] == true
+        )
+      );
+
+      // No deleting chats
+      allow delete: if false;
+
+      // Messages under this chat
+      match /messages/{messageId} {
+        // For get operations, check parent chat participant
+        allow get: if isChatParticipant(chatId);
+        
+        // For list queries, use isChatParticipant which handles both list and map formats
+        allow list: if isChatParticipant(chatId);
+
+        // Sender must be the signed-in user AND in the chat
+        allow create: if isChatParticipant(chatId)
+          && (
+            request.resource.data.senderId == request.auth.uid
+            || request.resource.data.senderUid == request.auth.uid
+          );
+
+        // Allow delete only if the user is the sender
+        allow delete: if isSignedIn() && resource.data.senderId == request.auth.uid;
+        
+        // Allow update only if the user is the sender (for upload progress)
+        allow update: if isSignedIn() && resource.data.senderId == request.auth.uid;
+      }
+    }
+
+    /* ---------- Businesses ---------- */
+    match /businesses/{businessId} {
+      allow get, list: if true;
+      allow create: if isSignedIn();
+      allow update, delete: if isBusinessOwner(businessId);
+
+      match /catalog/{itemId} {
+        allow get, list: if true;
+        allow create, update, delete: if isBusinessOwner(businessId);
+      }
+      
+      match /menu/{itemId} {
+        allow get, list: if true;
+        allow create, update, delete: if isBusinessOwner(businessId);
+      }
+    }
+
+    /* ---------- Orders ---------- */
+    function validOrderStatus(s) {
+      return s is string &&
+        s in ['payment_pending', 'paid', 'preparing', 'ready', 'completed', 'cancelled'];
+    }
+
+    function canAdvanceStatus(old, next) {
+      return
+        (old == 'payment_pending' && next in ['paid', 'cancelled']) ||
+        (old == 'paid'            && next in ['preparing', 'cancelled']) ||
+        (old == 'preparing'       && next in ['ready', 'cancelled']) ||
+        (old == 'ready'           && next == 'completed') ||
+        (old == 'completed'       && next == 'completed') ||
+        (old == 'cancelled'       && next == 'cancelled');
+    }
+
+    function isOrderOwner() {
+      return isSignedIn() && resource.data.ownerId == request.auth.uid;
+    }
+    
+    function isOrderBuyer() {
+      return isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    function createIsBuyer() {
+      return isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /orders/{orderId} {
+      // READ: only buyer or owner
+      allow get, list: if isOrderOwner() || isOrderBuyer();
+
+      // CREATE: buyer creates their own order
+      allow create: if createIsBuyer()
+        && request.resource.data.keys().hasAll([
+             'businessId', 'ownerId', 'userId', 'items', 'total', 'status'
+           ])
+        && request.resource.data.businessId is string
+        && request.resource.data.ownerId  is string
+        && request.resource.data.userId   is string
+        && request.resource.data.items    is list
+        && request.resource.data.total    is number
+        && validOrderStatus(request.resource.data.status);
+
+      // UPDATE:
+      allow update: if
+        (
+          isOrderOwner() &&
+          changedOnly(['status','updatedAt']) &&
+          validOrderStatus(request.resource.data.status) &&
+          canAdvanceStatus(resource.data.status, request.resource.data.status)
+        )
+        ||
+        (
+          isOrderBuyer() &&
+          changedOnly(['status','updatedAt']) &&
+          resource.data.status in ['paid','preparing'] &&
+          request.resource.data.status == 'cancelled'
+        );
+
+      allow delete: if false;
+    }
+
+    match /wallet_transfer_requests/{txId} {
+      allow create: if isSignedIn();
+      allow read:   if isSignedIn();
+      allow update, delete: if false;
+    }
+
+    /* ---------- Communities ---------- */
+    match /communities/{communityId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update, delete: if isSignedIn() && request.auth.uid == resource.data.createdBy;
+
+      match /groupChats/{chatId} {
+        allow get, list: if isSignedIn();
+
+        allow create: if (
+          isMemberByUserDoc(communityId)
+          ||
+          (
+            exists(/databases/$(database)/documents/communities/$(communityId))
+            && get(/databases/$(database)/documents/communities/$(communityId)).data.createdBy == request.auth.uid
+          )
+        )
+        && request.resource.data.keys().hasAny(['name', 'title']);
+
+        allow update: if (
+          (
+            isMemberByUserDoc(communityId)
+            && changedOnly(['members'])
+            && (request.resource.data.members is list)
+            && !(request.auth.uid in (resource.data.members is list ? resource.data.members : []))
+            && (request.auth.uid in request.resource.data.members)
+            && request.resource.data.members.size()
+              == ((resource.data.members is list ? resource.data.members.size() : 0) + 1)
+          )
+          ||
+          (
+            isMemberOfGroupChat(communityId, chatId)
+            && request.resource.data.diff(resource.data).changedKeys().hasOnly(['lastMessageText', 'lastMessageSenderId', 'lastMessageTimestamp', 'unreadCount'])
+          )
+          ||
+          (
+            exists(/databases/$(database)/documents/communities/$(communityId))
+            && get(/databases/$(database)/documents/communities/$(communityId)).data.createdBy == request.auth.uid
+          )
+        );
+
+        allow delete: if (
+          (isMemberByUserDoc(communityId) && resource.data.createdBy == request.auth.uid)
+          ||
+          (
+            exists(/databases/$(database)/documents/communities/$(communityId))
+            && get(/databases/$(database)/documents/communities/$(communityId)).data.createdBy == request.auth.uid
+          )
+        );
+
+        match /messages/{messageId} {
+          allow get, list: if isSignedIn()
+            && (isMemberByUserDoc(communityId) || isMemberOfGroupChat(communityId, chatId)
+                || (exists(/databases/$(database)/documents/communities/$(communityId))
+                    && get(/databases/$(database)/documents/communities/$(communityId)).data.createdBy == request.auth.uid));
+
+          allow create: if (
+            (
+              (isMemberByUserDoc(communityId) || isMemberOfGroupChat(communityId, chatId))
+              && (
+                (request.resource.data.senderId == request.auth.uid) ||
+                (request.resource.data.senderUid == request.auth.uid)
+              )
+            )
+            ||
+            (
+              exists(/databases/$(database)/documents/communities/$(communityId))
+              && get(/databases/$(database)/documents/communities/$(communityId)).data.createdBy == request.auth.uid
+            )
+          );
+
+          allow delete: if isSignedIn() && resource.data.senderId == request.auth.uid;
+          allow update: if isSignedIn() && resource.data.senderId == request.auth.uid;
+        }
+      }
+
+      match /chats/{chatId} {
+        allow get, list: if isSignedIn();
+
+        allow create: if isMemberByUserDoc(communityId)
+          && request.resource.data.keys().hasAny(['name', 'title']);
+
+        allow update: if isMemberByUserDoc(communityId)
+          && changedOnly(['members'])
+          && (request.resource.data.members is list)
+          && !(request.auth.uid in (resource.data.members is list ? resource.data.members : []))
+          && (request.auth.uid in request.resource.data.members)
+          && request.resource.data.members.size()
+             == ((resource.data.members is list ? resource.data.members.size() : 0) + 1);
+
+        allow delete: if isMemberByUserDoc(communityId)
+          && resource.data.createdBy == request.auth.uid;
+
+        match /messages/{messageId} {
+          allow get, list: if isSignedIn();
+          allow create: if isMemberByUserDoc(communityId)
+            && (
+              (request.resource.data.senderId == request.auth.uid) ||
+              (request.resource.data.senderUid == request.auth.uid)
+            );
+          allow delete: if isSignedIn() && resource.data.senderId == request.auth.uid;
+          allow update: if isSignedIn() && resource.data.senderId == request.auth.uid;
+        }
+      }
+    }
+
+    /* ---------- Wallets + Transactions ---------- */
+    match /wallets/{userId} {
+      allow get, list: if isSelf(userId);
+      allow create, update, delete: if false;
+
+      match /transactions/{txId} {
+        allow get, list: if isSelf(userId);
+        allow create, update, delete: if false;
+      }
+    }
+
+    match /transactions/{transactionId} {
+      allow get, list: if isSignedIn() && request.auth.uid in resource.data.participants;
+      allow create, update, delete: if false;
+    }
+
+    /* ---------- Driver applications/profile ---------- */
+    match /driver_applications/{uid} {
+      allow read: if isSignedIn();
+      allow write: if isSelf(uid);
+    }
+
+    match /drivers/{uid} {
+      allow read: if true;
+      allow write: if isSelf(uid);
+    }
+
+    match /drivers_live/{uid} {
+      allow read: if true;
+      allow write: if isSelf(uid);
+    }
+
+    /* ---------- Rides ---------- */
+    match /rides/{rideId} {
+      allow read: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        (resource.data.driverPreferred is map && resource.data.driverPreferred.id == request.auth.uid) ||
+        (resource.data.driver is map && resource.data.driver.id == request.auth.uid)
+      );
+
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid;
+
+      allow update: if isSignedIn() && (
+        (
+          isRideOwner()
+          && changedOnly(['status','updatedAt'])
+          && request.resource.data.status == 'cancelled'
+        )
+        ||
+        (
+          isRideOwner()
+          && resource.data.status == 'on_trip'
+          && changedOnly(['status','updatedAt'])
+          && request.resource.data.status == 'completed'
+        )
+        ||
+        (
+          isTargetedDriver()
+          && resource.data.status == 'driver_requested'
+          && (
+            (
+              request.resource.data.status == 'driver_assigned'
+              && request.resource.data.driver is map
+              && request.resource.data.driver.id == request.auth.uid
+              && (
+                   request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','driver','updatedAt'])
+                || request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','driver','driverPreferred','updatedAt'])
+              )
+            )
+            ||
+            (
+              request.resource.data.status == 'driver_declined'
+              && request.resource.data.driverPreferred == null
+              && changedOnly(['status','driverPreferred','updatedAt'])
+            )
+          )
+        )
+        ||
+        (
+          isAssignedDriver()
+          && changedOnly(['status','updatedAt'])
+          && (
+            (resource.data.status == 'driver_assigned' && request.resource.data.status in ['driver_arrived','on_trip']) ||
+            (resource.data.status == 'driver_arrived' && request.resource.data.status == 'on_trip')
+          )
+        )
+      );
+
+      allow delete: if false;
+    }
+
+    /* ---------- Group Wallets ---------- */
+    match /groupWallets/{groupId} {
+      allow read: if isSignedIn();
+      
+      allow write: if isSignedIn() && (
+        get(/databases/$(database)/documents/groupWallets/$(groupId)).data.createdBy == request.auth.uid ||
+        (
+          exists(/databases/$(database)/documents/communities/$(get(/databases/$(database)/documents/groupWallets/$(groupId)).data.communityId)) &&
+          get(/databases/$(database)/documents/communities/$(get(/databases/$(database)/documents/groupWallets/$(groupId)).data.communityId)).data.createdBy == request.auth.uid
+        )
+      );
+
+      match /transactions/{txId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn();
+      }
+    }
+
+    /* ---------- Activities (Real-Time Meetups) ---------- */
+    match /activities/{activityId} {
+      // Read: any signed-in user can read (queries would otherwise fail when result set includes friends_only docs the user can't read; filter visibility in the app if needed)
+      allow read: if request.auth != null;
+      
+      // Signed-in users can create activities; require creator and participants, allow optional fields
+      allow create: if isSignedIn()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.get('participants', []) is list
+        && request.auth.uid in request.resource.data.get('participants', [])
+        && (request.resource.data.get('visibility', 'everyone') == 'everyone'
+            || (request.resource.data.get('visibility') == 'friends_only'
+                && request.resource.data.get('allowedViewers', []) is list
+                && request.auth.uid in request.resource.data.get('allowedViewers', [])));
+      
+      // Creator can update, or anyone can join (add themselves to participants)
+      allow update: if isSignedIn() && (
+        // Creator can update any field
+        resource.data.createdBy == request.auth.uid ||
+        // Anyone can add themselves to participants
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['participants'])
+          && request.resource.data.participants is list
+          && request.resource.data.participants.hasAll(resource.data.participants)
+          && request.auth.uid in request.resource.data.participants
+        )
+      );
+      
+      allow delete: if isSignedIn() && resource.data.createdBy == request.auth.uid;
+    }
+
+    /* ---------- Activity Chats (group chat per activity, for participants) ---------- */
+    match /activityChats/{activityId} {
+      allow read, write: if isSignedIn()
+        && request.auth.uid in get(/databases/$(database)/documents/activities/$(activityId)).data.get('participants', []);
+      match /messages/{messageId} {
+        allow read, write: if isSignedIn()
+          && request.auth.uid in get(/databases/$(database)/documents/activities/$(activityId)).data.get('participants', []);
+      }
+    }
+
+    /* ---------- Activity Memories (video, 24h expiry; visible to everyone within 50km) ---------- */
+    match /activityMemories/{memoryId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasAll(['activityId', 'videoUrl', 'userId', 'userName', 'createdAt', 'expiresAt', 'latitude', 'longitude'])
+        && request.auth.uid in get(/databases/$(database)/documents/activities/$(request.resource.data.activityId)).data.get('participants', []);
+      allow update: if false;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    /* ---------- Future Trips ---------- */
+    match /futureTrips/{tripId} {
+      // Anyone can read trips (for matching)
+      allow read: if true;
+      
+      // Only signed-in users can create their own trips
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasAll(['destination', 'startDate', 'endDate', 'userId', 'createdAt'])
+        && request.resource.data.destination is string
+        && request.resource.data.startDate is string
+        && request.resource.data.endDate is string;
+      
+      // Only trip owner can update
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      // Only trip owner can delete
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    /* ---------- Catch-all ---------- */
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
