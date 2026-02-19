@@ -257,11 +257,9 @@ export default function MapScreen() {
 
     (async () => {
       try {
-        // Show map immediately
-        setLoading(false);
-
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
+          if (mounted) setLoading(false);
           Alert.alert(
             'Location Permission',
             'Please enable location permissions to see your location on the map.'
@@ -286,44 +284,34 @@ export default function MapScreen() {
           longitudeDelta: 0.05,
         };
         setRegion(newRegion);
-        setFollowUser(true); // Enable follow on initial load
-        followUserRef.current = true;
+        setFollowUser(false); // Only recenter on open and when user taps recenter
+        followUserRef.current = false;
+        setLoading(false); // Show map only after we have location so it opens with correct region (no flicker)
 
-        // Start watching location for continuous updates (after initial load)
+        // Start watching location for continuous updates (user dot + Firestore only; do not recenter map)
         setTimeout(async () => {
           try {
             locationSubscriptionRef.current = await Location.watchPositionAsync(
               {
                 accuracy: Location.Accuracy.Balanced,
-                timeInterval: 10000, // Update every 10 seconds
-                distanceInterval: 50, // Update every 50 meters
+                timeInterval: 10000,
+                distanceInterval: 50,
               },
               (newLocation) => {
                 if (mounted) {
                   setUserLocation(newLocation);
                   saveUserLocationToFirestore(newLocation.coords.latitude, newLocation.coords.longitude);
-                  // Only update map center if followUser is enabled (use ref for latest value)
-                  if (followUserRef.current && mapRef.current) {
-                    const newRegion: Region = {
-                      latitude: newLocation.coords.latitude,
-                      longitude: newLocation.coords.longitude,
-                      latitudeDelta: 0.05,
-                      longitudeDelta: 0.05,
-                    };
-                    setRegion(newRegion);
-                    isProgrammaticUpdateRef.current = true;
-                    mapRef.current.animateToRegion(newRegion, 500);
-        }
                 }
               }
             );
           } catch (e) {
             console.error('Error setting up location watch:', e);
           }
-        }, 2000); // Start watching after 2 seconds
+        }, 2000);
       } catch (error) {
         console.error('Error getting location:', error);
         if (mounted) {
+          setLoading(false);
           Alert.alert('Error', 'Failed to get your location. Please try again.');
         }
       }
@@ -520,25 +508,7 @@ export default function MapScreen() {
     return () => clearInterval(interval);
   }, []);
 
-  // When user location is first available (or map tab is shown), center map on user immediately so they don't have to tap the location FAB
-  const hasAnimatedToUserRef = useRef(false);
-  useEffect(() => {
-    if (!userLocation || tabIndex !== 0) return;
-    const t = setTimeout(() => {
-      if (mapRef.current && !hasAnimatedToUserRef.current) {
-        hasAnimatedToUserRef.current = true;
-        const userRegion: Region = {
-          latitude: userLocation.coords.latitude,
-          longitude: userLocation.coords.longitude,
-          latitudeDelta: 0.05,
-          longitudeDelta: 0.05,
-        };
-        isProgrammaticUpdateRef.current = true;
-        mapRef.current.animateToRegion(userRegion, 800);
-      }
-    }, 400);
-    return () => clearTimeout(t);
-  }, [userLocation, tabIndex]);
+  // One-time recenter on open is done in onMapReady only (avoids double animation / flicker)
 
   // When user taps "View on map" from memory viewer: switch to Map tab, then animate to that location and show highlight
   useEffect(() => {
@@ -901,6 +871,26 @@ export default function MapScreen() {
     );
   };
 
+  /** Open add-memory flow from map FAB: pick activity if multiple, then add memory. */
+  const handleAddMemoryFromMap = () => {
+    if (myActivities.length === 0) return;
+    if (myActivities.length === 1) {
+      handleAddMemory(myActivities[0]);
+      return;
+    }
+    Alert.alert(
+      'Add memory to',
+      'Choose an activity',
+      [
+        ...myActivities.slice(0, 5).map((a) => ({
+          text: a.title.length > 30 ? a.title.slice(0, 27) + '…' : a.title,
+          onPress: () => handleAddMemory(a),
+        })),
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  };
+
   const handleAddMemory = async (activity: Activity) => {
     if (!auth.currentUser) {
       Alert.alert('Error', 'You must be logged in to add a memory.');
@@ -1187,17 +1177,7 @@ export default function MapScreen() {
       onMapReady={() => {
         if (isInteractive) {
           console.log('✅ Map is ready - API key is working!');
-          if (userLocation && mapRef.current && !hasAnimatedToUserRef.current) {
-            hasAnimatedToUserRef.current = true;
-            const userRegion: Region = {
-              latitude: userLocation.coords.latitude,
-              longitude: userLocation.coords.longitude,
-              latitudeDelta: 0.05,
-              longitudeDelta: 0.05,
-            };
-            isProgrammaticUpdateRef.current = true;
-            mapRef.current.animateToRegion(userRegion, 800);
-          }
+          // Map already opens with correct region (set before loading=false); recenter only via button
         }
       }}
     >
@@ -1276,6 +1256,16 @@ export default function MapScreen() {
         <View style={StyleSheet.absoluteFillObject}>
           {renderMapContent(true)}
         </View>
+        {myActivities.length > 0 && (
+          <View style={[localStyles.cameraFabContainer, { bottom: fabBottom }]} pointerEvents="box-none">
+            <TouchableOpacity
+              style={[localStyles.actionButton, { backgroundColor: colors.primary }]}
+              onPress={handleAddMemoryFromMap}
+            >
+              <Ionicons name="camera" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+        )}
         <View style={[localStyles.actionButtons, { bottom: fabBottom }]} pointerEvents="box-none">
           <TouchableOpacity
             style={[localStyles.actionButton, { backgroundColor: colors.primary }]}
@@ -1393,67 +1383,57 @@ export default function MapScreen() {
         swipeEnabled
         initialLayout={{ width: Dimensions.get('window').width }}
         style={{ flex: 1, backgroundColor: 'transparent' }}
-        renderTabBar={(props) => (
-          <View style={{ backgroundColor: colors.background, borderBottomWidth: 1, borderBottomColor: colors.borderColor }}>
-            <TabBar
-              {...props}
-              style={{ backgroundColor: 'transparent', elevation: 0 }}
-              indicatorStyle={{ height: 3, backgroundColor: colors.primary }}
-              activeColor={colors.primary}
-              inactiveColor={colors.secondaryText}
-            />
-          </View>
-        )}
+        renderTabBar={(props) => {
+          const activityIdsWithMemories = Array.from(new Set(memories.map((m) => m.activityId)));
+          return (
+            <View style={{ backgroundColor: colors.background, borderBottomWidth: 1, borderBottomColor: colors.borderColor }}>
+              <TabBar
+                {...props}
+                style={{ backgroundColor: 'transparent', elevation: 0 }}
+                indicatorStyle={{ height: 3, backgroundColor: colors.primary }}
+                activeColor={colors.primary}
+                inactiveColor={colors.secondaryText}
+              />
+              {activityIdsWithMemories.length > 0 && (
+                <View
+                  style={[
+                    localStyles.memoriesStripBelowTabs,
+                    { backgroundColor: 'transparent', borderBottomColor: colors.borderColor },
+                  ]}
+                  pointerEvents="box-none"
+                >
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={localStyles.memoriesStripContent} style={{ backgroundColor: 'transparent' }}>
+                    {activityIdsWithMemories.map((activityId) => {
+                      const activity = activities.find((a) => a.id === activityId);
+                      const count = memories.filter((m) => m.activityId === activityId).length;
+                      return (
+                        <TouchableOpacity
+                          key={activityId}
+                          style={localStyles.memoryRing}
+                          onPress={() => openMemoryViewer(activityId)}
+                          activeOpacity={0.8}
+                        >
+                          <View style={[localStyles.memoryRingInner, { borderColor: colors.primary, backgroundColor: getActivityColor(activity?.activityType || 'other') }]}>
+                            <Ionicons name={getActivityIconOutline(activity?.activityType || 'other')} size={28} color="#FFFFFF" />
+                          </View>
+                          {count > 1 && (
+                            <View style={localStyles.memoryCountBadge}>
+                              <Text style={localStyles.memoryCountText}>{count}</Text>
+                            </View>
+                          )}
+                          <Text style={[localStyles.memoryRingLabel, { color: colors.text, textShadowColor: 'rgba(0,0,0,0.5)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 }]} numberOfLines={1}>
+                            {activity?.title || memories.find((m) => m.activityId === activityId)?.activityTitle || 'Activity'}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+          );
+        }}
       />
-
-      {/* Memories strip - outside TabView so its background stays transparent on both Map and My activities tabs */}
-      {(() => {
-        const activityIdsWithMemories = Array.from(new Set(memories.map((m) => m.activityId)));
-        if (activityIdsWithMemories.length === 0) return null;
-        return (
-          <View
-            style={[
-              localStyles.memoriesStripBelowTabs,
-              {
-                position: 'absolute',
-                top: TAB_BAR_HEIGHT,
-                left: 0,
-                right: 0,
-                backgroundColor: 'transparent',
-                borderBottomColor: colors.borderColor,
-              },
-            ]}
-            pointerEvents="box-none"
-          >
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={localStyles.memoriesStripContent} style={{ backgroundColor: 'transparent' }}>
-              {activityIdsWithMemories.map((activityId) => {
-                const activity = activities.find((a) => a.id === activityId);
-                const count = memories.filter((m) => m.activityId === activityId).length;
-                return (
-                  <TouchableOpacity
-                    key={activityId}
-                    style={localStyles.memoryRing}
-                    onPress={() => openMemoryViewer(activityId)}
-                    activeOpacity={0.8}
-                  >
-                    <View style={[localStyles.memoryRingInner, { borderColor: colors.primary, backgroundColor: getActivityColor(activity?.activityType || 'other') }]}>
-                      <Ionicons name={getActivityIconOutline(activity?.activityType || 'other')} size={28} color="#FFFFFF" />
-                    </View>
-                    {count > 1 && (
-                      <View style={localStyles.memoryCountBadge}>
-                        <Text style={localStyles.memoryCountText}>{count}</Text>
-                      </View>
-                    )}
-                    <Text style={[localStyles.memoryRingLabel, { color: colors.text, textShadowColor: 'rgba(0,0,0,0.5)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2 }]} numberOfLines={1}>
-                      {activity?.title || memories.find((m) => m.activityId === activityId)?.activityTitle || 'Activity'}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
-        );
-      })()}
 
       {/* Loading overlay */}
       {loading && tabIndex === 0 && (
@@ -2363,6 +2343,10 @@ const localStyles = StyleSheet.create({
     position: 'absolute',
     bottom: 90,
     right: 20,
+  },
+  cameraFabContainer: {
+    position: 'absolute',
+    left: 20,
   },
   actionButton: {
     width: 50,
