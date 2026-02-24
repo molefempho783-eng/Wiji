@@ -1,0 +1,82 @@
+{
+  "project_info": {
+    "project_number": "975021405125",
+    "project_id": "communitychat-f3fb0",
+    "storage_bucket": "communitychat-f3fb0.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:975021405125:android:1fec78d3c14befd5ad91ac",
+        "android_client_info": {
+          "package_name": "com.CyanideTech.Dsquare"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "975021405125-dlj33kdvvpug9jsmt0pp6h933fas59us.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC4O5xEAgQMEmEuWZShkNueBDoVQBGg-mk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "975021405125-dlj33kdvvpug9jsmt0pp6h933fas59us.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "975021405125-9ubsff59a338rfonqosmip5ar9p5c6h3.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.CyanideTech.DSquare"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:975021405125:android:b96336634473ee59ad91ac",
+        "android_client_info": {
+          "package_name": "com.mpho.dsquare"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "975021405125-dlj33kdvvpug9jsmt0pp6h933fas59us.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC4O5xEAgQMEmEuWZShkNueBDoVQBGg-mk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "975021405125-dlj33kdvvpug9jsmt0pp6h933fas59us.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "975021405125-9ubsff59a338rfonqosmip5ar9p5c6h3.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.CyanideTech.DSquare"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
