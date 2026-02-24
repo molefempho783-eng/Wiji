@@ -8,10 +8,10 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
-  FlatList,
   TouchableWithoutFeedback,
   Keyboard,
-  Platform,
+  StyleSheet,
+  FlatList,
 } from "react-native";
 import { useNavigation } from "@react-navigation/native";
 import { StackNavigationProp } from "@react-navigation/stack";
@@ -41,12 +41,13 @@ const CreateCommunityScreen = () => {
   const [communityLogoUri, setCommunityLogoUri] = useState<string | null>(null);
 const [locationAddress, setLocationAddress] = useState("");
   const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([]);
- const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null); 
+  const [showLocationSuggestions, setShowLocationSuggestions] = useState(false);
+  const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [categories, setCategories] = useState("");
   const [isPickingImage, setIsPickingImage] = useState(false);
 
-  const GOOGLE_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
+  const GOOGLE_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyDR5JhBnTT53KmUwNQI6QcWG5RjY5sdYRM';
 
   /* ----------------------------------------------------------------
    * Image picker
@@ -86,6 +87,7 @@ const [locationAddress, setLocationAddress] = useState("");
     try {
       const res = await fetch(url);
       const data = await res.json();
+      if (data?.error_message) return [];
       return (data?.predictions || []).map((p: any) => ({
         place_id: p.place_id,
         description: p.description,
@@ -110,12 +112,19 @@ const [locationAddress, setLocationAddress] = useState("");
   }
 const handleLocationChange = async (text: string) => {
     setLocationAddress(text);
-    setSelectedPlaceId(null); // <-- ADD THIS to clear the old ID
+    setSelectedPlaceId(null);
     if (text.trim().length > 1) {
-      const results = await fetchSuggestions(text);
-      setSuggestions(results);
+      try {
+        const results = await fetchSuggestions(text);
+        setSuggestions(results);
+        setShowLocationSuggestions(results.length > 0);
+      } catch {
+        setSuggestions([]);
+        setShowLocationSuggestions(false);
+      }
     } else {
       setSuggestions([]);
+      setShowLocationSuggestions(false);
     }
   };
 
@@ -123,6 +132,8 @@ const handleLocationChange = async (text: string) => {
     setLocationAddress(s.description);
     setSelectedPlaceId(s.place_id);
     setSuggestions([]);
+    setShowLocationSuggestions(false);
+    Keyboard.dismiss();
   };
 
 const validateLocation = async (): Promise<boolean> => {
@@ -157,7 +168,6 @@ const validateLocation = async (): Promise<boolean> => {
       return await getDownloadURL(storageRef);
     } catch (err) {
       console.error("Upload failed", err);
-      Alert.alert("Error", "Failed to upload image.");
       return null;
     }
   };
@@ -224,7 +234,7 @@ const validateLocation = async (): Promise<boolean> => {
       setSelectedPlaceId(null);
       setCommunityLogoUri(null);
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "Could not create community.");
+      console.error("Create community failed", e?.message ?? e);
     } finally {
       setLoading(false);
     }
@@ -268,14 +278,15 @@ const validateLocation = async (): Promise<boolean> => {
             {communityLogoUri ? (
             <Image
                 source={{ uri: communityLogoUri }}
-              style={styles.logoImage}
+                style={styles.logoImage}
+                resizeMode="cover"
             />
             ) : (
               <View
                 style={{
-                  width: styles.logoImage.width,
-                  height: styles.logoImage.height,
-                  borderRadius: styles.logoImage.width / 2,
+                  width: 120,
+                  height: 120,
+                  borderRadius: 60,
                   backgroundColor: colors.primaryLight,
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -339,38 +350,54 @@ const validateLocation = async (): Promise<boolean> => {
             autoCapitalize="none" // Good for categories/tags
           />
 
-          {/* Location (with suggestions) */}
-          
-          <TextInput
-            style={[
-              styles.input,
-              { borderColor: colors.borderColor, backgroundColor: colors.cardBackground, color: colors.text, marginBottom: 0 },
-            ]}
-            placeholder="Location (optional)"
-            placeholderTextColor={colors.placeholderText as string}
-            value={locationAddress}
-            onChangeText={handleLocationChange}
-          />
-
-          {suggestions.length > 0 && (
-            <FlatList
-              data={suggestions}
-              keyExtractor={(item) => item.place_id}
-              style={{
-                backgroundColor: colors.cardBackground,
-                borderColor: colors.borderColor,
-                borderWidth: 1,
-                marginHorizontal:0,
-                borderRadius: 10,
-                marginBottom: 10,
-              }}
-              renderItem={({ item }) => (
-                <TouchableOpacity onPress={() => handleSelectLocation(item)} style={{ padding: 10 }}>
-                  <Text style={{ color: colors.text }}>{item.description}</Text>
-                </TouchableOpacity>
-              )}
+          {/* Location (autocomplete) – in-flow list so it isn't clipped by ScrollView */}
+          <Text style={{ color: colors.text, fontSize: FONT_SIZES.medium, marginBottom: 8 }}>Location (optional)</Text>
+          <View style={{ marginBottom: SPACING.medium }}>
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  borderColor: colors.borderColor,
+                  backgroundColor: colors.cardBackground,
+                  color: colors.text,
+                  marginBottom: showLocationSuggestions && suggestions.length > 0 ? 0 : undefined,
+                },
+              ]}
+              placeholder="Search for an address..."
+              placeholderTextColor={colors.placeholderText as string}
+              value={locationAddress}
+              onChangeText={handleLocationChange}
+              autoCorrect={false}
             />
-          )}
+            {showLocationSuggestions && suggestions.length > 0 && (
+              <ScrollView
+                style={[
+                  locationStyles.suggestionsList,
+                  {
+                    backgroundColor: colors.cardBackground,
+                    borderColor: colors.borderColor,
+                  },
+                ]}
+                nestedScrollEnabled
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="on-drag"
+              >
+                {suggestions.map((item) => (
+                  <TouchableOpacity
+                    key={item.place_id}
+                    style={[locationStyles.suggestionItem, { borderBottomColor: colors.borderColor }]}
+                    onPress={() => handleSelectLocation(item)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="location-outline" size={20} color={colors.textSecondary} style={{ marginRight: 8 }} />
+                    <Text style={[locationStyles.suggestionText, { color: colors.text }]} numberOfLines={2}>
+                      {item.description}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
+          </View>
 
           {/* Create Button */}
           <TouchableOpacity style={styles.saveButton} onPress={handleCreateCommunity}>
@@ -385,5 +412,26 @@ const validateLocation = async (): Promise<boolean> => {
     </TouchableWithoutFeedback>
   );
 };
+
+const locationStyles = StyleSheet.create({
+  suggestionsList: {
+    maxHeight: 200,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderTopWidth: 0,
+    marginTop: 0,
+    overflow: 'hidden',
+  },
+  suggestionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderBottomWidth: 1,
+  },
+  suggestionText: {
+    flex: 1,
+    fontSize: 14,
+  },
+});
 
 export default CreateCommunityScreen;

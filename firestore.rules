@@ -519,6 +519,20 @@ service cloud.firestore {
       );
       
       allow delete: if isSignedIn() && resource.data.createdBy == request.auth.uid;
+
+      // Join requests: signed-in users can create (app only shows "Request to join" when activity has requiresApproval)
+      match /joinRequests/{requestId} {
+        allow create: if isSignedIn();
+        allow read: if isSignedIn() && (
+          get(/databases/$(database)/documents/activities/$(activityId)).data.createdBy == request.auth.uid
+          || resource.data.userId == request.auth.uid
+        );
+        allow update: if false;
+        allow delete: if isSignedIn() && (
+          get(/databases/$(database)/documents/activities/$(activityId)).data.createdBy == request.auth.uid
+          || resource.data.userId == request.auth.uid
+        );
+      }
     }
 
     /* ---------- Activity Chats (group chat per activity, for participants) ---------- */

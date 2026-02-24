@@ -67,7 +67,7 @@ const AuthScreen = () => {
       }
 
       setError("");
-      navigation.navigate("CommunityScreen"); 
+      navigation.navigate("Tabs", { screen: "CommunityScreen" });
     } catch (err: any) {
       setError(err.message);
     }

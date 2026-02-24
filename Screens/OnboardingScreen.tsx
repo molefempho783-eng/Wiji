@@ -33,32 +33,26 @@ const onboardingData: OnboardingSlide[] = [
   {
     id: "1",
     icon: "people",
-    title: "Connect with Communities",
-    description: "Join groups, chat with friends, and build your network.",
+    title: "Communities",
+    description: "Join communities that matter to you. Create groups, chat with members, and stay connected with your community.",
   },
   {
     id: "2",
-    icon: "storefront",
-    title: "Discover Local Businesses",
-    description: "Browse shops, order products, and support local vendors.",
+    icon: "person-add",
+    title: "Explore & Make Friends",
+    description: "Explore to find people nearby, send friend requests, and start conversations. Make new friends and grow your network.",
   },
   {
     id: "3",
-    icon: "wallet",
-    title: "Manage Your Wallet",
-    description: "Send money, receive payments, and track your transactions.",
+    icon: "map",
+    title: "Activities & Memories",
+    description: "Create or join activities on the map, add memories with photos, and chat with everyone in the activity.",
   },
   {
     id: "4",
-    icon: "map",
-    title: "Discover Places Around You",
-    description: "Use the map to find restaurants, recommended places, and special deals near you.",
-  },
-  {
-    id: "5",
     icon: "sparkles",
     title: "Ready to Get Started?",
-    description: "Join thousands of users already using the app.",
+    description: "Join others already using the app.",
   },
 ];
 

@@ -1331,6 +1331,85 @@ function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
   return R * c;
 }
 
+// When 3+ people join an activity within 10 minutes, notify nearby users who haven't joined ("Don't miss out")
+const JOIN_WINDOW_MINUTES = 10;
+const DONT_MISS_OUT_COOLDOWN_MINUTES = 30;
+
+export const notifyOnActivityJoins = onDocumentUpdated('activities/{activityId}', async (event) => {
+  const before: any = event.data?.before?.data();
+  const after: any = event.data?.after?.data();
+  if (!before || !after) return;
+
+  const beforeParticipants: string[] = before.participants || [];
+  const afterParticipants: string[] = after.participants || [];
+  if (afterParticipants.length <= beforeParticipants.length) return; // no new join
+
+  const activityId = event.params.activityId;
+  const activityLat = after.latitude;
+  const activityLng = after.longitude;
+  const activityTitle = after.title || 'Activity';
+  const activityType = after.activityType || 'activity';
+  const visibility = after.visibility || 'everyone';
+  const allowedViewers: string[] = after.allowedViewers || [];
+
+  if (!activityLat || !activityLng) return;
+
+  try {
+    const joinEventsRef = db.collection('activities').doc(activityId).collection('joinEvents');
+    await joinEventsRef.add({ joinedAt: FieldValue.serverTimestamp() });
+
+    const tenMinutesAgo = Timestamp.fromMillis(Date.now() - JOIN_WINDOW_MINUTES * 60 * 1000);
+    const recentJoinsSnap = await joinEventsRef.where('joinedAt', '>=', tenMinutesAgo).get();
+    if (recentJoinsSnap.size < 3) return;
+
+    const lastSent = after.lastDonMissOutNotificationAt?.toMillis?.() ?? 0;
+    const cooldownMs = DONT_MISS_OUT_COOLDOWN_MINUTES * 60 * 1000;
+    if (Date.now() - lastSent < cooldownMs) return;
+
+    const participantsSet = new Set(afterParticipants);
+    const usersSnapshot = await db.collection('users').get();
+    const nearbyUserTokens: string[] = [];
+
+    for (const userDoc of usersSnapshot.docs) {
+      const userId = userDoc.id;
+      if (participantsSet.has(userId)) continue;
+
+      const userData = userDoc.data();
+      const userLat = userData.latitude;
+      const userLng = userData.longitude;
+      if (userLat == null || userLng == null) continue;
+
+      const distance = calculateDistance(activityLat, activityLng, userLat, userLng);
+      if (distance > 50) continue;
+      if (visibility === 'friends_only' && allowedViewers.length > 0 && !allowedViewers.includes(userId)) continue;
+
+      const fcmTokens: string[] = (userData.fcmTokens || []).filter(
+        (t: any) => typeof t === 'string' && t.length > 0
+      );
+      const expoTokens: string[] = (userData.expoPushTokens || []).filter(
+        (t: any) => typeof t === 'string' && t.startsWith('ExponentPushToken')
+      );
+      const tokens = fcmTokens.length > 0 ? fcmTokens : expoTokens;
+      if (tokens.length > 0) nearbyUserTokens.push(...tokens);
+    }
+
+    if (nearbyUserTokens.length === 0) return;
+
+    await sendFCMPush(
+      nearbyUserTokens,
+      'People are joining!',
+      `People are joining "${activityTitle}". Don't miss out!`,
+      { type: 'activity_hot', activityId, title: activityTitle }
+    );
+    await db.collection('activities').doc(activityId).update({
+      lastDonMissOutNotificationAt: FieldValue.serverTimestamp(),
+    });
+    logger.info(`notifyOnActivityJoins: sent "Don't miss out" to ${nearbyUserTokens.length} users for activity ${activityId}`);
+  } catch (e) {
+    logger.warn('notifyOnActivityJoins failed', e);
+  }
+});
+
 // Notify users within 50km when a new activity is created
 export const notifyOnNewActivity = onDocumentCreated('activities/{activityId}', async (event) => {
   const activity = event.data?.data();
@@ -1415,6 +1494,80 @@ export const notifyOnNewActivity = onDocumentCreated('activities/{activityId}', 
     logger.info(`Sent activity notification to ${nearbyUserTokens.length} nearby users`);
   } catch (e) {
     logger.warn('notifyOnNewActivity failed', e);
+  }
+});
+
+/** When someone requests to join an activity (require-approval), notify the activity creator. */
+export const notifyOnActivityJoinRequest = onDocumentCreated(
+  'activities/{activityId}/joinRequests/{requestId}',
+  async (event) => {
+    const activityId = event.params.activityId;
+    const requestData = event.data?.data();
+    if (!requestData) return;
+
+    const requesterName = String(requestData.userName || 'Someone');
+    try {
+      const activitySnap = await db.collection('activities').doc(activityId).get();
+      if (!activitySnap.exists) return;
+
+      const createdBy = activitySnap.get('createdBy');
+      const activityTitle = activitySnap.get('title') || 'your activity';
+      if (!createdBy) return;
+
+      const creatorSnap = await db.collection('users').doc(createdBy).get();
+      if (!creatorSnap.exists) return;
+
+      const fcmTokens: string[] = (creatorSnap.get('fcmTokens') || []).filter(
+        (t: any) => typeof t === 'string' && t.length > 0
+      );
+      const expoTokens: string[] = (creatorSnap.get('expoPushTokens') || []).filter(
+        (t: any) => typeof t === 'string' && t.startsWith('ExponentPushToken')
+      );
+      const tokens = fcmTokens.length > 0 ? fcmTokens : expoTokens;
+      if (tokens.length === 0) return;
+
+      await sendFCMPush(
+        tokens,
+        'Join request',
+        `${requesterName} requested to join "${activityTitle}". Open the activity to accept or decline.`,
+        { type: 'activity_join_request', activityId, activityTitle }
+      );
+      logger.info(`Sent join-request notification to creator of activity ${activityId}`);
+    } catch (e) {
+      logger.warn('notifyOnActivityJoinRequest failed', e);
+    }
+  }
+);
+
+/** Callable: send push to the user whose join request was accepted (call after client has added them to participants and deleted the request). */
+export const notifyJoinRequestAccepted = onCall({}, async (request) => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Must be signed in');
+  const { activityId, activityTitle, recipientUserId } = request.data as {
+    activityId?: string;
+    activityTitle?: string;
+    recipientUserId?: string;
+  };
+  if (!activityId || !recipientUserId) throw new HttpsError('invalid-argument', 'activityId and recipientUserId required');
+  const title = activityTitle ? String(activityTitle) : 'Activity';
+  try {
+    const userSnap = await db.collection('users').doc(recipientUserId).get();
+    if (!userSnap.exists) return { ok: false };
+    const data = userSnap.data() || {};
+    const fcmTokens: string[] = (data.fcmTokens || []).filter((t: any) => typeof t === 'string' && t.length > 0);
+    const expoTokens: string[] = (data.expoPushTokens || []).filter((t: any) => typeof t === 'string' && String(t).startsWith('ExponentPushToken'));
+    const tokens = fcmTokens.length > 0 ? fcmTokens : expoTokens;
+    if (tokens.length > 0) {
+      await sendFCMPush(
+        tokens,
+        "You're in!",
+        `You were accepted to "${title}". Open the activity to chat and add memories.`,
+        { type: 'activity_join_accepted', activityId, title }
+      );
+    }
+    return { ok: true };
+  } catch (e) {
+    logger.warn('notifyJoinRequestAccepted failed', e);
+    return { ok: false };
   }
 });
 

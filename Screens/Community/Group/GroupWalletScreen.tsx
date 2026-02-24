@@ -108,7 +108,7 @@ const GroupWalletScreen = () => {
       if (result.data?.ok)
         Alert.alert("Success", `Deposited R${amount} via ${method}`);
     } catch (err: any) {
-      Alert.alert("Error", err.message || "Deposit failed.");
+      console.error("Deposit failed", err.message ?? err);
     } finally {
       setDepositing(false);
     }

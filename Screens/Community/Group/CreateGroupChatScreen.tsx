@@ -119,7 +119,7 @@ const CreateGroupChatScreen = () => {
         setGroupImageUri(result.assets[0].uri);
       }
     } catch (error: any) {
-      Alert.alert("Error", `Failed to pick image: ${error.message}`);
+      console.error("Failed to pick image", error.message ?? error);
     }
   };
 
@@ -135,7 +135,7 @@ const CreateGroupChatScreen = () => {
       const downloadURL = await getDownloadURL(storageRef);
       return downloadURL;
     } catch (error: any) {
-      Alert.alert("Upload Error", error.message);
+      console.error("Upload error", error.message ?? error);
       return null;
     } finally {
       setUploadingImage(false);
@@ -213,7 +213,6 @@ const CreateGroupChatScreen = () => {
       navigation.goBack();
     } catch (error: any) {
       console.error("Create group error:", error);
-      Alert.alert("Error", error.message);
     } finally {
       setLoading(false);
     }

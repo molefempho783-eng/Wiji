@@ -69,7 +69,7 @@ const BeADriverScreen: React.FC = () => {
       });
       Alert.alert("Submitted", "Your application is submitted and pending approval.");
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "Could not submit application.");
+      console.error("Could not submit application", e?.message ?? e);
     } finally {
       setSubmitting(false);
     }

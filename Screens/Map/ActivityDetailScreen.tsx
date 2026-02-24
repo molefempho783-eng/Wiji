@@ -132,7 +132,7 @@ export default function ActivityDetailScreen() {
         );
         setMembers(memberList);
       } catch (e) {
-        Alert.alert('Error', 'Could not load activity.');
+        console.error('Could not load activity', e);
         navigation.goBack();
       } finally {
         setLoading(false);

@@ -11,4 +11,8 @@
 -keep class com.swmansion.reanimated.** { *; }
 -keep class com.facebook.react.turbomodule.** { *; }
 
+# Google Play Services / Maps (required for release builds with PROVIDER_GOOGLE)
+-keep class com.google.android.gms.** { *; }
+-dontwarn com.google.android.gms.**
+
 # Add any project specific keep options here:

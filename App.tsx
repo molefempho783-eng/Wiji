@@ -47,7 +47,10 @@ import GroupWalletScreen from "./Screens/Community/Group/GroupWalletScreen";
 import { registerForPushNotificationsAsync, savePushTokenToUser } from './hooks/useRegisterPushToken';
 import { LogBox } from 'react-native';
 
-// Add this line somewhere at the top level of your app
+// Keep errors in terminal only; do not show LogBox/error overlay in the app
+LogBox.ignoreAllLogs(true);
+
+// Optional: ignore specific message patterns (still only in terminal when ignoreAllLogs is true)
 LogBox.ignoreLogs([
   'VirtualizedLists should never be nested',
   '@firebase/firestore',
@@ -68,15 +71,21 @@ Notifications.setNotificationHandler({
   }),
 });
 
-// Create Android notification channel for foreground notifications
-if (Platform.OS === 'android') {
-  Notifications.setNotificationChannelAsync('default', {
-    name: 'Default',
-    importance: Notifications.AndroidImportance.HIGH,
-    vibrationPattern: [0, 250, 250, 250],
-    lightColor: '#FF231F7C',
-  });
-}
+// Create Android notification channel (must exist before showing any notification; FCM uses channelId 'default')
+const ensureAndroidNotificationChannel = async () => {
+  if (Platform.OS !== 'android') return;
+  try {
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'Default',
+      importance: Notifications.AndroidImportance.HIGH,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#FF231F7C',
+    });
+  } catch (e) {
+    console.warn('Could not create notification channel:', e);
+  }
+};
+ensureAndroidNotificationChannel();
 
 // Optional: strongly-typed route names if you keep a RootStackParamList
 // type RootStackParamList = { ... }
@@ -211,12 +220,14 @@ const MainNavigator = () => {
       if (notification) {
         try {
           console.log('📬 Displaying foreground notification:', notification.title, notification.body);
+          await ensureAndroidNotificationChannel();
           await Notifications.scheduleNotificationAsync({
             content: {
               title: notification.title || 'Notification',
               body: notification.body || '',
               data: data,
               sound: true,
+              ...(Platform.OS === 'android' && { channelId: 'default' }),
             },
             trigger: null, // Show immediately
           });

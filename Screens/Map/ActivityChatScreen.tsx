@@ -155,7 +155,7 @@ export default function ActivityChatScreen() {
           }).catch(() => {});
         }
       } catch (e) {
-        Alert.alert('Error', 'Could not load activity.');
+        console.error('Could not load activity', e);
         navigation.goBack();
       } finally {
         setLoading(false);
@@ -274,7 +274,7 @@ export default function ActivityChatScreen() {
             await updateDoc(messageDocRef, { uploading: false, uploadError: error.message }).catch(() => {});
             setMessages((prev) => prev.filter((m) => m.id !== messageDocRef.id));
             setIsUploadingMedia(false);
-            Alert.alert('Upload Error', error.message || 'Failed to upload.');
+            console.error('Upload error', error.message ?? error);
           },
           async () => {
             try {
@@ -291,14 +291,14 @@ export default function ActivityChatScreen() {
             } catch (e: any) {
               await updateDoc(messageDocRef, { uploading: false, uploadError: e.message }).catch(() => {});
               setMessages((prev) => prev.filter((m) => m.id !== messageDocRef.id));
-              Alert.alert('Upload Error', e.message || 'Failed to get URL.');
+              console.error('Upload error (get URL)', e.message ?? e);
             }
             setIsUploadingMedia(false);
           }
         );
       } catch (e: any) {
         setIsUploadingMedia(false);
-        Alert.alert('Upload Error', e.message || 'Failed to start upload.');
+        console.error('Upload error (start)', e.message ?? e);
       }
     },
     [activityId, currentUserId, updateChatMeta]
@@ -323,7 +323,7 @@ export default function ActivityChatScreen() {
         await updateChatMeta(preview);
         setNewMessage('');
       } catch (e: any) {
-        Alert.alert('Error', e.message || 'Failed to send.');
+        console.error('Failed to send', e.message ?? e);
       }
     },
     [currentUserId, updateChatMeta]
@@ -360,7 +360,7 @@ export default function ActivityChatScreen() {
       const fileType = getFileTypeFromExtension(fileName);
       await uploadMediaToFirebase(file.uri, fileType, fileName);
     } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to pick file.');
+      console.error('Failed to pick file', e.message ?? e);
     }
   };
 
@@ -400,7 +400,7 @@ export default function ActivityChatScreen() {
       try {
         await Linking.openURL(url);
       } catch {
-        Alert.alert('Error', e?.message || 'Could not open file.');
+        console.error('Could not open file', e?.message ?? e);
       }
     } finally {
       setOpeningFile(false);

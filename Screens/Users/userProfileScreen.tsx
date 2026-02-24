@@ -77,7 +77,6 @@ const UserProfileScreen = () => {
       }
     } catch (error) {
       console.error("Error fetching user data:", error);
-      Alert.alert(`Failed to load profile: ${(error as Error).message || "Please try again."}`);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -140,7 +139,6 @@ const UserProfileScreen = () => {
 
     } catch (error: any) {
       console.error("Error starting chat:", error);
-      Alert.alert(`Failed to start chat: ${error.message || "Please try again."}`, "Check console for more details.");
     } finally {
       setChatLoading(false);
     }

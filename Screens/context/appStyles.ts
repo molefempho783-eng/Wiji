@@ -1549,22 +1549,16 @@ chevronContainer: {
         textAlign: 'center',
       },
       logoContainer: {
-        alignSelf: 'center',
+        alignItems: 'center',
+        marginBottom: SPACING.large,
+      },
+      logoImage: {
         width: 120,
         height: 120,
         borderRadius: 60,
-        backgroundColor: colors.cardBackground,
-        justifyContent: 'center',
-        alignItems: 'center',
-        marginBottom: SPACING.large,
         borderWidth: 2,
         borderColor: colors.borderColor,
-        overflow: 'hidden',
-      },
-      logoImage: {
-        width: '100%',
-        height: '100%',
-        resizeMode: 'cover',
+        backgroundColor: colors.cardBackground,
       },
       addLogoText: {
         color: colors.primary,

@@ -1,7 +1,7 @@
 // hooks/useRegisterPushToken.ts
 import messaging from '@react-native-firebase/messaging';
 import firebase, { getApps } from '@react-native-firebase/app';
-import { Platform, Alert, PermissionsAndroid } from 'react-native';
+import { Platform, Alert, PermissionsAndroid, Linking } from 'react-native';
 import { doc, setDoc, updateDoc, arrayUnion } from 'firebase/firestore';
 import { db, auth, firebaseConfig } from '../firebaseConfig';
 
@@ -45,16 +45,18 @@ export async function registerForPushNotificationsAsync(): Promise<string | null
         console.warn('❌ Notification permission not granted on iOS');
         Alert.alert(
           'Notifications disabled',
-          'Please enable notifications in Settings to receive message alerts.'
+          'Please enable notifications in Settings to receive message alerts and so the app can work correctly.',
+          [
+            { text: 'Open settings', onPress: () => Linking.openSettings() },
+            { text: 'OK' },
+          ]
         );
         return null;
       }
     }
 
-    // 2) Get FCM token (using new modular API to avoid deprecation warning)
+    // 2) Get FCM token; on Android emulator retry once after delay (Play Services can start late)
     console.log('📱 Getting FCM token...');
-    // Use the messaging instance directly (non-deprecated way)
-    // React Native Firebase auto-initializes, but we catch errors just in case
     let messagingInstance;
     try {
       messagingInstance = messaging();
@@ -62,19 +64,36 @@ export async function registerForPushNotificationsAsync(): Promise<string | null
       console.error('❌ Failed to get messaging instance:', error.message);
       return null;
     }
-    
-    const token = await messagingInstance.getToken();
-    
+
+    const getTokenWithRetry = async (attempt = 1): Promise<string | null> => {
+      try {
+        const t = await messagingInstance.getToken();
+        return t || null;
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        const looksLikeEmulator = Platform.OS === 'android' && (msg.includes('MISSING_INSTANCEID') || msg.includes('SERVICE_NOT_AVAILABLE') || msg.includes('PHONE_REGISTRATION'));
+        if (looksLikeEmulator && attempt === 1) {
+          console.warn('⚠️ FCM token failed (emulator?). Retrying in 3s...');
+          await new Promise((r) => setTimeout(r, 3000));
+          return getTokenWithRetry(2);
+        }
+        throw err;
+      }
+    };
+
+    const token = await getTokenWithRetry();
     if (token) {
       console.log('✅ FCM token obtained:', token.substring(0, 20) + '...');
     } else {
-      console.warn('❌ Failed to get FCM token');
+      console.warn('❌ Failed to get FCM token. On emulator: use an AVD with Google Play and try a cold boot.');
     }
-    
     return token;
   } catch (e: any) {
     console.error('❌ registerForPushNotificationsAsync error:', e);
     console.error('Error details:', e.message, e.stack);
+    if (Platform.OS === 'android') {
+      console.warn('On Android emulator: use an AVD with "Google Play" (not just Google APIs), sign in with a Google account, and cold boot if needed. See NOTIFICATIONS_ANDROID.md.');
+    }
     return null;
   }
 }

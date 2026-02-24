@@ -266,7 +266,6 @@ const ShopScreen = () => {
       setAddress(line);
     } catch (e: any) {
       console.error('Location error', e);
-      Alert.alert('Error', e?.message || 'Could not get your location.');
     } finally {
       setLocLoading(false);
     }
@@ -362,7 +361,7 @@ const ShopScreen = () => {
         e?.message?.includes('functions') && e?.message?.includes('response') && e?.message
           ? 'Payment failed. Please try again.'
           : e?.message || 'Payment failed. Please try again.';
-      Alert.alert('Error', msg);
+      console.error('Payment failed', msg);
     } finally {
       setPlacing(false);
     }

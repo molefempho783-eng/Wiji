@@ -36,8 +36,10 @@ import { useAuth } from "../../AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import createStyles, { FONT_SIZES } from "../context/appStyles";
 import { TabView, SceneMap, TabBar } from "react-native-tab-view";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const DEFAULT_AVATAR = require("../../assets/avatar-placeholder.png");
+const PROFILE_HEADER_HINT_SEEN_KEY = "@Square_has_seen_profile_tap_hint";
 
 type NavigationProp = StackNavigationProp<RootStackParamList, "ChatRoomScreen">;
 
@@ -91,8 +93,23 @@ const UsersScreen = () => {
   >({});
   const [currentUserData, setCurrentUserData] = useState<UserRow | null>(null);
   const [conversations, setConversations] = useState<ConversationRow[]>([]);
+  const [showProfileTapHint, setShowProfileTapHint] = useState<boolean | null>(null);
 
   const { user: currentUser } = useAuth();
+
+  /** One-time hint: "Tap to edit profile" - only show until user has tapped header once */
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const seen = await AsyncStorage.getItem(PROFILE_HEADER_HINT_SEEN_KEY);
+        if (mounted) setShowProfileTapHint(seen !== "true");
+      } catch {
+        if (mounted) setShowProfileTapHint(true);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   /** 🟢 Load users function (reusable for refresh) */
   const loadUsers = useCallback(() => {
@@ -647,8 +664,20 @@ const exploreUsers = useMemo(() => {
   /** 🖥 UI */
   return (
     <SafeAreaView style={globalStyles.safeArea} edges={["top", "left", "right"]}>
-      {/* Header with Profile Pic and profile strength bar */}
-      <View style={styles.headerContainer}>
+      {/* Header with Profile Pic and profile strength bar - whole header taps to Profile */}
+      <TouchableOpacity
+        style={styles.headerContainer}
+        onPress={async () => {
+          if (showProfileTapHint) {
+            try {
+              await AsyncStorage.setItem(PROFILE_HEADER_HINT_SEEN_KEY, "true");
+            } catch {}
+            setShowProfileTapHint(false);
+          }
+          navigation.navigate("ProfileScreen");
+        }}
+        activeOpacity={0.8}
+      >
         <View style={{ flex: 1 }}>
           <Text style={styles.pageTitle} numberOfLines={1}>
             {currentUserData?.username || currentUser?.displayName || currentUser?.email?.split("@")[0] || "User"}
@@ -676,10 +705,7 @@ const exploreUsers = useMemo(() => {
           </View>
         </View>
 
-        <TouchableOpacity
-          onPress={() => navigation.navigate("ProfileScreen")}
-          style={{ marginLeft: 12 }}
-        >
+        <View style={{ marginLeft: 12 }}>
           {currentUserData?.profilePic ? (
             <Image
               source={{ uri: currentUserData.profilePic }}
@@ -694,8 +720,57 @@ const exploreUsers = useMemo(() => {
               </Text>
             </View>
           )}
-        </TouchableOpacity>
-      </View>
+        </View>
+      </TouchableOpacity>
+
+      {showProfileTapHint === true && (
+        <View
+          style={{
+            position: 'absolute',
+            top: 56,
+            left: 16,
+            right: 16,
+            alignItems: 'center',
+            zIndex: 10,
+          }}
+          pointerEvents="box-none"
+        >
+          {/* Pointer (triangle) pointing up at the header */}
+          <View
+            style={{
+              width: 0,
+              height: 0,
+              borderLeftWidth: 8,
+              borderRightWidth: 8,
+              borderBottomWidth: 10,
+              borderLeftColor: 'transparent',
+              borderRightColor: 'transparent',
+              borderBottomColor: colors.primary + '22',
+              alignSelf: 'center',
+            }}
+          />
+          <View
+            style={{
+              backgroundColor: colors.primary + '22',
+              paddingVertical: 10,
+              paddingHorizontal: 14,
+              borderRadius: 16,
+              borderTopRightRadius: 4,
+              borderTopLeftRadius: 4,
+              maxWidth: 280,
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 2 },
+              shadowOpacity: 0.15,
+              shadowRadius: 6,
+              elevation: 4,
+            }}
+          >
+            <Text style={{ fontSize: 13, color: colors.text }}>
+              Tap above to edit your profile
+            </Text>
+          </View>
+        </View>
+      )}
 
       <TabView
         navigationState={{ index, routes }}

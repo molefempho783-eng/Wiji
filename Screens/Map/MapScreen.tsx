@@ -16,6 +16,8 @@ import {
   Image,
   Switch,
   PanResponder,
+  Linking,
+  PermissionsAndroid,
 } from 'react-native';
 import MapView, {
   Marker,
@@ -42,12 +44,14 @@ import {
   updateDoc,
   arrayUnion,
   getDoc,
+  getDocs,
   Timestamp,
   deleteDoc,
   orderBy,
 } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '../../firebaseConfig';
+import { db, storage, functions } from '../../firebaseConfig';
+import { httpsCallable } from 'firebase/functions';
 import * as ImagePicker from 'expo-image-picker';
 import { Video, ResizeMode } from 'expo-av';
 import { TabView, SceneMap, TabBar } from 'react-native-tab-view';
@@ -127,6 +131,7 @@ interface Activity {
   distance?: number; // Distance in km
   visibility?: 'everyone' | 'friends_only';
   allowedViewers?: string[]; // When friends_only: creator + friend UIDs
+  requiresApproval?: boolean; // When true, users must request to join; creator accepts/declines
 }
 
 /** Memory tied to an activity (video), 24h expiry; visible to everyone within 50km */
@@ -168,6 +173,8 @@ export default function MapScreen() {
   const followUserRef = useRef(true); // Use ref to access latest followUser value in callbacks
   const isProgrammaticUpdateRef = useRef(false); // Track if we're programmatically updating region
   const lastSavedLocationTimeRef = useRef<number>(0);
+  const initialLocationDoneRef = useRef(false);
+  const myJoinRequestsByActivityRef = useRef<Record<string, { activityTitle: string; requests: { requestId: string; userId: string; userName: string; userPhoto?: string; requestedAt: any }[] }>>({});
 
   const [userLocation, setUserLocation] = useState<Location.LocationObject | null>(null);
   const [region, setRegion] = useState<Region>(DEFAULT_REGION);
@@ -192,6 +199,26 @@ export default function MapScreen() {
   ]);
   const [highlightedMemoryLocation, setHighlightedMemoryLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [unreadByActivityId, setUnreadByActivityId] = useState<Record<string, number>>({});
+  const [joinRequestsForSelected, setJoinRequestsForSelected] = useState<{ id: string; userId: string; userName: string; userPhoto?: string; requestedAt: any }[]>([]);
+  const [hasPendingJoinRequest, setHasPendingJoinRequest] = useState(false);
+  const [requestJoinLoading, setRequestJoinLoading] = useState(false);
+  const [acceptDeclineLoadingId, setAcceptDeclineLoadingId] = useState<string | null>(null);
+  /** Join requests for activities I created (requiresApproval), shown on My activities tab */
+  const [myJoinRequests, setMyJoinRequests] = useState<{
+    activityId: string;
+    activityTitle: string;
+    requestId: string;
+    userId: string;
+    userName: string;
+    userPhoto?: string;
+    requestedAt: any;
+  }[]>([]);
+
+  const isActivityExpired = (a: Activity): boolean => {
+    if (!a.endTime) return false;
+    const endTime = a.endTime.toDate ? a.endTime.toDate() : new Date(a.endTime.seconds * 1000);
+    return endTime < new Date();
+  };
 
   const myActivities = useMemo(() => {
     const list = activities.filter(
@@ -206,11 +233,11 @@ export default function MapScreen() {
     return list;
   }, [activities, auth.currentUser?.uid]);
 
-  const isActivityExpired = (a: Activity): boolean => {
-    if (!a.endTime) return false;
-    const endTime = a.endTime.toDate ? a.endTime.toDate() : new Date(a.endTime.seconds * 1000);
-    return endTime < new Date();
-  };
+  /** Activities the user has joined/created that are still ongoing (not past end time). Used to show camera FAB only when they can add a memory. */
+  const myOngoingActivities = useMemo(
+    () => myActivities.filter((a) => !isActivityExpired(a)),
+    [myActivities]
+  );
 
   /** Activities to show on the map (exclude expired so we don't clutter the map) */
   const activitiesForMap = activities.filter((a) => !isActivityExpired(a));
@@ -233,6 +260,7 @@ export default function MapScreen() {
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const [showLocationSuggestions, setShowLocationSuggestions] = useState(false);
   const [activityFriendsOnly, setActivityFriendsOnly] = useState(false);
+  const [activityRequiresApproval, setActivityRequiresApproval] = useState(false);
 
   const GOOGLE_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyDR5JhBnTT53KmUwNQI6QcWG5RjY5sdYRM';
 
@@ -251,42 +279,121 @@ export default function MapScreen() {
     }).catch((err) => console.warn('Failed to save user location for notifications:', err));
   };
 
-  // Request location permission and start tracking
+  // Request location permission and start tracking — show map quickly, then refine location
+  const MAP_SHOW_TIMEOUT_MS = 2500; // Show map after this even if GPS hasn't resolved
+  const LAST_KNOWN_MAX_AGE_MS = 120000; // Use cached position up to 2 min old
+  const LOCATION_PROMPT_AFTER_MS = 2000; // If still loading after this, prompt to allow location
+
   useEffect(() => {
     let mounted = true;
+    let showMapTimeout: ReturnType<typeof setTimeout> | null = null;
+    let locationPromptTimeout: ReturnType<typeof setTimeout> | null = null;
+    initialLocationDoneRef.current = false;
+
+    const applyLocation = (location: Location.LocationObject) => {
+      if (!mounted) return;
+      initialLocationDoneRef.current = true;
+      setUserLocation(location);
+      saveUserLocationToFirestore(location.coords.latitude, location.coords.longitude);
+      setRegion({
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
+      });
+      setFollowUser(false);
+      followUserRef.current = false;
+    };
 
     (async () => {
       try {
+        // Ensure notification permission is set first (can block or delay on some devices/emulators if missing)
+        if (Platform.OS === 'android') {
+          await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+        }
+
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
+          initialLocationDoneRef.current = true;
           if (mounted) setLoading(false);
           Alert.alert(
             'Location Permission',
-            'Please enable location permissions to see your location on the map.'
+            'Please enable location permissions to see your location on the map.',
+            [
+              { text: 'Open settings', onPress: () => Linking.openSettings() },
+              { text: 'OK' },
+            ]
           );
           return;
         }
 
-        // Get initial location with balanced accuracy (faster)
+        // Ensure device/system location is turned on (e.g. emulator: Settings > Location > Use location)
+        const servicesEnabled = await Location.hasServicesEnabledAsync();
+        if (!servicesEnabled && mounted) {
+          initialLocationDoneRef.current = true;
+          setLoading(false);
+          Alert.alert(
+            'Turn on location',
+            "Location is off on this device. Enable it so the map can show your position.\n\n• Emulator: Settings → Location → turn on \"Use location\". On Android 12+: you may need to turn off \"Improve Location Accuracy\" (Google Location Accuracy) then set a location in the emulator's Extended Controls (⋯).\n\n• Phone: Settings → Location → turn on.",
+            [
+              { text: 'Open app settings', onPress: () => Linking.openSettings() },
+              { text: 'OK' },
+            ]
+          );
+          return;
+        }
+
+        // On Android, prompt for high-accuracy mode so GPS/network location works (helps emulators)
+        if (Platform.OS === 'android') {
+          Location.enableNetworkProviderAsync().catch(() => {});
+        }
+
+        // If loading takes longer than 2s, prompt user to allow location access
+        locationPromptTimeout = setTimeout(() => {
+          if (!mounted || initialLocationDoneRef.current) return;
+          Alert.alert(
+            'Allow location access',
+            'Location is taking a while. Ensure location is enabled for this app and that device location is on (e.g. on emulator: Settings → Location → Use location).',
+            [
+              { text: 'Open settings', onPress: () => Linking.openSettings() },
+              { text: 'OK' },
+            ]
+          );
+        }, LOCATION_PROMPT_AFTER_MS);
+
+        // Fast path: use cached position so map shows immediately when possible
+        const lastKnown = await Location.getLastKnownPositionAsync({
+          maxAge: LAST_KNOWN_MAX_AGE_MS,
+        });
+        if (lastKnown && mounted) {
+          applyLocation(lastKnown);
+          setLoading(false);
+          if (locationPromptTimeout) {
+            clearTimeout(locationPromptTimeout);
+            locationPromptTimeout = null;
+          }
+        } else {
+          // No cache: show map after short delay so we don't block on slow GPS
+          showMapTimeout = setTimeout(() => {
+            if (mounted) setLoading(false);
+          }, MAP_SHOW_TIMEOUT_MS);
+        }
+
+        // Get accurate position in background (may take a while on cold start)
         const location = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
         });
-
         if (!mounted) return;
-
-        setUserLocation(location);
-        saveUserLocationToFirestore(location.coords.latitude, location.coords.longitude);
-
-        const newRegion: Region = {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          latitudeDelta: 0.05,
-          longitudeDelta: 0.05,
-        };
-        setRegion(newRegion);
-        setFollowUser(false); // Only recenter on open and when user taps recenter
-        followUserRef.current = false;
-        setLoading(false); // Show map only after we have location so it opens with correct region (no flicker)
+        applyLocation(location);
+        if (showMapTimeout) {
+          clearTimeout(showMapTimeout);
+          showMapTimeout = null;
+        }
+        if (locationPromptTimeout) {
+          clearTimeout(locationPromptTimeout);
+          locationPromptTimeout = null;
+        }
+        setLoading(false);
 
         // Start watching location for continuous updates (user dot + Firestore only; do not recenter map)
         setTimeout(async () => {
@@ -311,15 +418,19 @@ export default function MapScreen() {
       } catch (error) {
         console.error('Error getting location:', error);
         if (mounted) {
+          initialLocationDoneRef.current = true;
+          if (showMapTimeout) clearTimeout(showMapTimeout);
+          if (locationPromptTimeout) clearTimeout(locationPromptTimeout);
           setLoading(false);
           Alert.alert('Error', 'Failed to get your location. Please try again.');
         }
       }
     })();
 
-    // Cleanup location subscription
     return () => {
       mounted = false;
+      if (showMapTimeout) clearTimeout(showMapTimeout);
+      if (locationPromptTimeout) clearTimeout(locationPromptTimeout);
       if (locationSubscriptionRef.current) {
         locationSubscriptionRef.current.remove();
       }
@@ -779,6 +890,7 @@ export default function MapScreen() {
         startTime: Timestamp.fromDate(combinedStartDateTime),
         endTime: Timestamp.fromDate(combinedEndDateTime),
         visibility,
+        requiresApproval: activityRequiresApproval,
         ...(allowedViewers && { allowedViewers }),
       });
       await setDoc(doc(db, 'activityChats', activityRef.id), {
@@ -807,6 +919,7 @@ export default function MapScreen() {
       setLocationSuggestions([]);
       setShowLocationSuggestions(false);
       setActivityFriendsOnly(false);
+      setActivityRequiresApproval(false);
     } catch (error: any) {
       console.error('Error creating activity:', error);
     }
@@ -1014,6 +1127,179 @@ export default function MapScreen() {
   const handleParticipantPress = (userId: string) => {
     setShowParticipantsList(false);
     navigation.navigate('UserProfileScreen', { userId });
+  };
+
+  // Subscribe to join requests when viewing an activity you created (requires approval)
+  useEffect(() => {
+    if (!selectedActivity || !auth.currentUser || selectedActivity.createdBy !== auth.currentUser.uid || !selectedActivity.requiresApproval) {
+      setJoinRequestsForSelected([]);
+      return;
+    }
+    const joinRequestsRef = collection(db, 'activities', selectedActivity.id, 'joinRequests');
+    const unsubscribe = onSnapshot(joinRequestsRef, (snap) => {
+      const list = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          userId: data.userId ?? '',
+          userName: data.userName ?? 'Unknown',
+          userPhoto: data.userPhoto,
+          requestedAt: data.requestedAt,
+        };
+      });
+      setJoinRequestsForSelected(list);
+    }, (err) => console.error('Join requests snapshot error', err));
+    return () => unsubscribe();
+  }, [selectedActivity?.id, selectedActivity?.createdBy, selectedActivity?.requiresApproval]);
+
+  // Check if current user has a pending join request for the selected activity
+  useEffect(() => {
+    if (!selectedActivity || !auth.currentUser || !selectedActivity.requiresApproval || selectedActivity.participants.includes(auth.currentUser.uid)) {
+      setHasPendingJoinRequest(false);
+      return;
+    }
+    const joinRequestsRef = collection(db, 'activities', selectedActivity.id, 'joinRequests');
+    getDocs(query(joinRequestsRef, where('userId', '==', auth.currentUser!.uid)))
+      .then((snap) => setHasPendingJoinRequest(!snap.empty))
+      .catch(() => setHasPendingJoinRequest(false));
+  }, [selectedActivity?.id, selectedActivity?.requiresApproval, selectedActivity?.participants]);
+
+  // Subscribe to ALL activities I created, then each activity's joinRequests → populates myJoinRequests for "My activities" tab
+  useEffect(() => {
+    if (!auth.currentUser) {
+      setMyJoinRequests([]);
+      myJoinRequestsByActivityRef.current = {};
+      return;
+    }
+    const uid = auth.currentUser.uid;
+    const activitiesRef = collection(db, 'activities');
+    const q = query(activitiesRef, where('createdBy', '==', uid));
+    const joinRequestUnsubs: Record<string, () => void> = {};
+
+    const unsubActivities = onSnapshot(
+      q,
+      (snap) => {
+        const approvalActivities: Record<string, string> = {};
+        snap.docs.forEach((d) => {
+          const data = d.data();
+          approvalActivities[d.id] = data.title || 'Activity';
+        });
+
+        Object.keys(approvalActivities).forEach((activityId) => {
+          if (joinRequestUnsubs[activityId]) return;
+          const joinRequestsRef = collection(db, 'activities', activityId, 'joinRequests');
+          joinRequestUnsubs[activityId] = onSnapshot(
+            joinRequestsRef,
+            (joinSnap) => {
+              const requests = joinSnap.docs.map((d) => {
+                const data = d.data();
+                return {
+                  requestId: d.id,
+                  userId: data.userId ?? '',
+                  userName: data.userName ?? 'Unknown',
+                  userPhoto: data.userPhoto,
+                  requestedAt: data.requestedAt,
+                };
+              });
+              myJoinRequestsByActivityRef.current[activityId] = {
+                activityTitle: approvalActivities[activityId] || 'Activity',
+                requests,
+              };
+              setMyJoinRequests(
+                Object.entries(myJoinRequestsByActivityRef.current).flatMap(([aid, { activityTitle, requests }]) =>
+                  requests.map((r) => ({
+                    activityId: aid,
+                    activityTitle,
+                    requestId: r.requestId,
+                    userId: r.userId,
+                    userName: r.userName,
+                    userPhoto: r.userPhoto,
+                    requestedAt: r.requestedAt,
+                  }))
+                )
+              );
+            },
+            (err) => console.error('My join requests snapshot error', err)
+          );
+        });
+
+        Object.keys(joinRequestUnsubs).forEach((id) => {
+          if (!approvalActivities[id]) {
+            joinRequestUnsubs[id]();
+            delete joinRequestUnsubs[id];
+            delete myJoinRequestsByActivityRef.current[id];
+          }
+        });
+        setMyJoinRequests(
+          Object.entries(myJoinRequestsByActivityRef.current).flatMap(([activityId, { activityTitle, requests }]) =>
+            requests.map((r) => ({
+              activityId,
+              activityTitle,
+              requestId: r.requestId,
+              userId: r.userId,
+              userName: r.userName,
+              userPhoto: r.userPhoto,
+              requestedAt: r.requestedAt,
+            }))
+          )
+        );
+      },
+      (err) => console.error('My activities (creator) snapshot error', err)
+    );
+
+    return () => {
+      unsubActivities();
+      Object.values(joinRequestUnsubs).forEach((u) => u());
+    };
+  }, [auth.currentUser?.uid]);
+
+  const handleRequestToJoin = async (activity: Activity) => {
+    if (!auth.currentUser) return;
+    try {
+      const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+      const userName = userDoc.exists() ? (userDoc.data()?.username || userDoc.data()?.displayName || 'Unknown') : 'Unknown';
+      const userPhoto = userDoc.exists() ? userDoc.data()?.profilePic : undefined;
+      await addDoc(collection(db, 'activities', activity.id, 'joinRequests'), {
+        userId: auth.currentUser.uid,
+        userName,
+        userPhoto: userPhoto || null,
+        requestedAt: serverTimestamp(),
+      });
+      setHasPendingJoinRequest(true);
+      Alert.alert('Request sent', 'The creator will be notified. You can join once they accept.');
+    } catch (error: any) {
+      console.error('Error requesting to join', error);
+    }
+  };
+
+  const handleAcceptJoinRequest = async (activity: Activity, requestId: string, userId: string) => {
+    try {
+      await updateDoc(doc(db, 'activities', activity.id), {
+        participants: arrayUnion(userId),
+      });
+      await deleteDoc(doc(db, 'activities', activity.id, 'joinRequests', requestId));
+      const chatRef = doc(db, 'activityChats', activity.id);
+      const chatSnap = await getDoc(chatRef);
+      if (!chatSnap.exists()) {
+        await setDoc(chatRef, {
+          activityId: activity.id,
+          activityTitle: activity.title,
+          createdAt: serverTimestamp(),
+        });
+      }
+      setSelectedActivity((prev) => prev ? { ...prev, participants: [...prev.participants, userId] } : null);
+    } catch (error: any) {
+      console.error('Error accepting join request', error);
+    }
+  };
+
+  const handleDeclineJoinRequest = async (activityId: string, requestId: string) => {
+    try {
+      await deleteDoc(doc(db, 'activities', activityId, 'joinRequests', requestId));
+      setJoinRequestsForSelected((prev) => prev.filter((r) => r.id !== requestId));
+    } catch (error: any) {
+      console.error('Error declining join request', error);
+    }
   };
 
   const handleActivityPress = (activity: Activity) => {
@@ -1256,7 +1542,7 @@ export default function MapScreen() {
         <View style={StyleSheet.absoluteFillObject}>
           {renderMapContent(true)}
         </View>
-        {myActivities.length > 0 && (
+        {myOngoingActivities.length > 0 && (
           <View style={[localStyles.cameraFabContainer, { bottom: fabBottom }]} pointerEvents="box-none">
             <TouchableOpacity
               style={[localStyles.actionButton, { backgroundColor: colors.primary }]}
@@ -1295,7 +1581,72 @@ export default function MapScreen() {
 
   const MyActivitiesRoute = () => (
     <View style={{ flex: 1, backgroundColor: 'transparent', paddingTop: myActivitiesTopPadding }}>
-      {myActivities.length === 0 ? (
+      {myJoinRequests.length > 0 && (
+        <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 }}>
+          <Text style={[localStyles.label, { color: colors.text, marginBottom: 8, fontSize: 16 }]}>Join requests</Text>
+          {myJoinRequests.map((req) => (
+            <View
+              key={`${req.activityId}_${req.requestId}`}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingVertical: 10,
+                paddingHorizontal: 12,
+                backgroundColor: colors.card,
+                borderRadius: 12,
+                marginBottom: 8,
+                borderWidth: 1,
+                borderColor: colors.border,
+              }}
+            >
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+                onPress={() => navigation.navigate('UserProfileScreen', { userId: req.userId })}
+                activeOpacity={0.7}
+              >
+                {req.userPhoto ? (
+                  <Image source={{ uri: req.userPhoto }} style={{ width: 44, height: 44, borderRadius: 22, marginRight: 12 }} />
+                ) : (
+                  <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: colors.border, marginRight: 12, justifyContent: 'center', alignItems: 'center' }}>
+                    <Text style={{ color: colors.text, fontWeight: '600', fontSize: 18 }}>{req.userName?.charAt(0).toUpperCase() || '?'}</Text>
+                  </View>
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: colors.text, fontSize: 16, fontWeight: '600' }} numberOfLines={1}>{req.userName}</Text>
+                  <Text style={{ color: colors.textSecondary, fontSize: 13, marginTop: 2 }} numberOfLines={1}>
+                    wants to join "{req.activityTitle}"
+                  </Text>
+                </View>
+              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', marginLeft: 8 }}>
+                {acceptDeclineLoadingId === req.requestId ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <>
+                    <TouchableOpacity
+                      style={{ backgroundColor: '#DC3545', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8 }}
+                      onPress={() => handleDeclineJoinRequest(req.activityId, req.requestId)}
+                    >
+                      <Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600' }}>Decline</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={{ backgroundColor: colors.primary, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8 }}
+                      onPress={() => {
+                        const act = activities.find((a) => a.id === req.activityId);
+                        handleAcceptJoinRequest(act || { id: req.activityId, title: req.activityTitle } as Activity, req.requestId, req.userId);
+                      }}
+                    >
+                      <Text style={{ color: '#FFF', fontSize: 13, fontWeight: '600' }}>Accept</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
+      {myActivities.length === 0 && myJoinRequests.length === 0 ? (
         <View style={[localStyles.emptyContainer, { backgroundColor: 'transparent' }]}>
           <Ionicons name="calendar-outline" size={64} color={colors.textSecondary} />
           <Text style={[localStyles.emptyText, { color: colors.text }]}>
@@ -1309,11 +1660,23 @@ export default function MapScreen() {
         <FlatList
           data={myActivities}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={{ paddingVertical: 12, paddingBottom: 100 }}
+          contentContainerStyle={{ paddingVertical: 12, paddingBottom: 100, paddingHorizontal: myJoinRequests.length > 0 ? 16 : 0 }}
           style={{ backgroundColor: 'transparent' }}
           renderItem={({ item }) => (
             <TouchableOpacity
-              style={[localStyles.activityCard, { backgroundColor: colors.card }]}
+              style={[
+                localStyles.activityCard,
+                {
+                  backgroundColor: colors.card,
+                  paddingVertical: 10,
+                  paddingHorizontal: 12,
+                  marginTop: 0,
+                  marginBottom: 8,
+                  marginHorizontal: 0,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                },
+              ]}
               onPress={() =>
                 navigation.navigate('ActivityChatScreen', {
                   activityId: item.id,
@@ -1329,18 +1692,23 @@ export default function MapScreen() {
                   </Text>
                 </View>
               )}
-              <View style={[localStyles.activityIconContainer, { backgroundColor: getActivityColor(item.activityType) }]}>
-                <Ionicons name={getActivityIcon(item.activityType) as any} size={24} color="#FFFFFF" />
+              <View
+                style={[
+                  localStyles.activityIconContainer,
+                  { backgroundColor: getActivityColor(item.activityType), width: 44, height: 44, borderRadius: 22 },
+                ]}
+              >
+                <Ionicons name={getActivityIcon(item.activityType) as any} size={22} color="#FFFFFF" />
               </View>
-              <View style={localStyles.activityCardContent}>
-                <Text style={[localStyles.activityCardTitle, { color: colors.text }]} numberOfLines={1}>
+              <View style={[localStyles.activityCardContent, { justifyContent: 'center' }]}>
+                <Text style={[localStyles.activityCardTitle, { color: colors.text, marginBottom: 2 }]} numberOfLines={1}>
                   {item.title}
                 </Text>
-                <Text style={[localStyles.activityCardText, { color: colors.textSecondary }]}>
+                <Text style={[localStyles.activityCardText, { color: colors.textSecondary, marginBottom: 0, fontSize: 13 }]}>
                   {getActivityTypeLabel(item.activityType)} • {item.participants.length} participants
                 </Text>
                 {item.location && (
-                  <Text style={[localStyles.activityCardText, { color: colors.textSecondary }]} numberOfLines={1}>
+                  <Text style={[localStyles.activityCardText, { color: colors.textSecondary, marginBottom: 0, fontSize: 13 }]} numberOfLines={1}>
                     {item.location}
                   </Text>
                 )}
@@ -1528,6 +1896,54 @@ export default function MapScreen() {
                       Participants: {selectedActivity.participants.length} (tap to view)
                     </Text>
                   </TouchableOpacity>
+
+                  {/* Join requests (creator only, when requires approval) */}
+                  {auth.currentUser && selectedActivity.createdBy === auth.currentUser.uid && selectedActivity.requiresApproval && joinRequestsForSelected.length > 0 && (
+                    <View style={{ marginTop: 12, marginBottom: 8 }}>
+                      <Text style={[localStyles.label, { color: colors.text, marginBottom: 8 }]}>Join requests</Text>
+                      {joinRequestsForSelected.map((req) => (
+                        <View
+                          key={req.id}
+                          style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8, paddingHorizontal: 12, backgroundColor: colors.background, borderRadius: 8, marginBottom: 6 }}
+                        >
+                          <TouchableOpacity
+                            style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+                            onPress={() => navigation.navigate('UserProfileScreen', { userId: req.userId })}
+                            activeOpacity={0.7}
+                          >
+                            {req.userPhoto ? (
+                              <Image source={{ uri: req.userPhoto }} style={{ width: 36, height: 36, borderRadius: 18, marginRight: 10 }} />
+                            ) : (
+                              <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: colors.border, marginRight: 10, justifyContent: 'center', alignItems: 'center' }}>
+                                <Text style={{ color: colors.text, fontWeight: '600' }}>{req.userName?.charAt(0).toUpperCase() || '?'}</Text>
+                              </View>
+                            )}
+                            <Text style={{ color: colors.text, fontSize: 15, flex: 1 }} numberOfLines={1}>{req.userName}</Text>
+                          </TouchableOpacity>
+                          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                            {acceptDeclineLoadingId === req.id ? (
+                              <ActivityIndicator size="small" color={colors.primary} />
+                            ) : (
+                              <>
+                                <TouchableOpacity
+                                  style={{ backgroundColor: '#DC3545', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8 }}
+                                  onPress={() => handleDeclineJoinRequest(selectedActivity.id, req.id)}
+                                >
+                                  <Text style={{ color: '#FFF', fontSize: 13 }}>Decline</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={{ backgroundColor: colors.primary, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8 }}
+                                  onPress={() => handleAcceptJoinRequest(selectedActivity, req.id, req.userId)}
+                                >
+                                  <Text style={{ color: '#FFF', fontSize: 13 }}>Accept</Text>
+                                </TouchableOpacity>
+                              </>
+                            )}
+                          </View>
+                        </View>
+                      ))}
+                    </View>
+                  )}
                 </ScrollView>
 
                 {/* Creator: Delete activity; Others: Join activity; Participants: Add memory - Fixed at bottom */}
@@ -1543,12 +1959,32 @@ export default function MapScreen() {
                         </TouchableOpacity>
                       )}
                       {!selectedActivity.participants.includes(auth.currentUser.uid) ? (
-                        <TouchableOpacity
-                          style={[localStyles.joinButton, { backgroundColor: colors.primary, marginTop: 0, flex: 1, minWidth: 120 }]}
-                          onPress={() => handleJoinActivity(selectedActivity)}
-                        >
-                          <Text style={localStyles.joinButtonText}>Join Activity</Text>
-                        </TouchableOpacity>
+                        selectedActivity.requiresApproval ? (
+                          hasPendingJoinRequest ? (
+                            <View style={[localStyles.joinButton, { backgroundColor: colors.border, marginTop: 0, flex: 1, minWidth: 120, justifyContent: 'center' }]}>
+                              <Text style={localStyles.joinButtonText}>Request pending</Text>
+                            </View>
+                          ) : (
+                            <TouchableOpacity
+                              style={[localStyles.joinButton, { backgroundColor: colors.primary, marginTop: 0, flex: 1, minWidth: 120 }]}
+                              onPress={() => handleRequestToJoin(selectedActivity)}
+                              disabled={requestJoinLoading}
+                            >
+                              {requestJoinLoading ? (
+                                <ActivityIndicator size="small" color="#FFFFFF" />
+                              ) : (
+                                <Text style={localStyles.joinButtonText}>Request to join</Text>
+                              )}
+                            </TouchableOpacity>
+                          )
+                        ) : (
+                          <TouchableOpacity
+                            style={[localStyles.joinButton, { backgroundColor: colors.primary, marginTop: 0, flex: 1, minWidth: 120 }]}
+                            onPress={() => handleJoinActivity(selectedActivity)}
+                          >
+                            <Text style={localStyles.joinButtonText}>Join Activity</Text>
+                          </TouchableOpacity>
+                        )
                       ) : (
                         <TouchableOpacity
                           style={[localStyles.joinButton, { backgroundColor: colors.primary, marginTop: 0, flex: 1, minWidth: 120 }]}
@@ -2124,7 +2560,7 @@ export default function MapScreen() {
                           setLocationSuggestions([]);
                           setShowLocationSuggestions(false);
                         } catch (error) {
-                          Alert.alert('Error', 'Failed to get location address. Please enter it manually.');
+                          console.error('Failed to get location address', error);
                         } finally {
                           setLocationLoading(false);
                         }
@@ -2175,6 +2611,18 @@ export default function MapScreen() {
                   <Switch
                     value={activityFriendsOnly}
                     onValueChange={setActivityFriendsOnly}
+                    trackColor={{ false: colors.border, true: colors.primary }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 16, paddingHorizontal: 4 }}>
+                  <Text style={{ fontSize: 16, color: colors.text, flex: 1 }}>
+                    Require approval to join (users request; you accept or decline)
+                  </Text>
+                  <Switch
+                    value={activityRequiresApproval}
+                    onValueChange={setActivityRequiresApproval}
                     trackColor={{ false: colors.border, true: colors.primary }}
                     thumbColor="#FFFFFF"
                   />

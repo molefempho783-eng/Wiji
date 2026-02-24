@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   TextInput,
-  Switch,
   Image,
   SafeAreaView,
   Platform
@@ -38,7 +37,7 @@ type BusinessesScreenNavigationProp = StackNavigationProp<RootStackParamList, "B
 
 const BusinessesScreen = () => {
   const navigation = useNavigation<BusinessesScreenNavigationProp>();
-  const { theme, colors, toggleTheme } = useTheme();
+  const { colors } = useTheme();
   const styles = createStyles(colors).businessesScreen;
   const globalStyles = createStyles(colors).global;
 
@@ -318,16 +317,6 @@ const BusinessesScreen = () => {
     <SafeAreaView style={globalStyles.safeArea}>
       <View style={styles.headerContainer}>
         <Text style={styles.pageTitle}>Businesses</Text>
-        <View style={styles.themeToggleContainer}>
-          <Text style={styles.themeToggleText}>Dark Mode</Text>
-          <Switch
-            trackColor={{ false: colors.secondaryText, true: colors.primary }}
-            thumbColor={colors.cardBackground}
-            ios_backgroundColor={colors.secondaryText}
-            onValueChange={toggleTheme}
-            value={theme === 'dark'}
-          />
-        </View>
       </View>
 
       <TabView

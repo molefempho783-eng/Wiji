@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   SafeAreaView,
   ScrollView,
+  Switch,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 
@@ -21,9 +22,11 @@ import createStyles, { SPACING, FONT_SIZES } from '../context/appStyles';
 import { useNavigation } from "@react-navigation/native"; 
 import { StackNavigationProp } from "@react-navigation/stack";
 import { RootStackParamList } from "../../types"; 
-import { Ionicons } from '@expo/vector-icons'; 
+import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const DEFAULT_AVATAR = require("../../assets/avatar-placeholder.png");
+const THEME_HINT_SEEN_KEY = "@Square_has_seen_theme_hint";
 
 // Define navigation prop type specifically for ProfileScreen
 type ProfileScreenNavigationProp = StackNavigationProp<RootStackParamList, "ProfileScreen">;
@@ -31,7 +34,7 @@ type ProfileScreenNavigationProp = StackNavigationProp<RootStackParamList, "Prof
 const ProfileScreen = () => {
   const auth = getAuth();
   const user = auth.currentUser;
-  const { colors, isThemeLoading } = useTheme();
+  const { colors, theme, toggleTheme, isThemeLoading } = useTheme();
   const navigation = useNavigation<ProfileScreenNavigationProp>();
 
 
@@ -46,6 +49,20 @@ const ProfileScreen = () => {
   const [username, setUsername] = useState<string>("");
 
   const [isProfileDataLoading, setIsProfileDataLoading] = useState(true);
+  const [showThemeHint, setShowThemeHint] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const seen = await AsyncStorage.getItem(THEME_HINT_SEEN_KEY);
+        if (mounted) setShowThemeHint(seen !== "true");
+      } catch {
+        if (mounted) setShowThemeHint(true);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   const MAX_GALLERY_PHOTOS = 6;
   const profileSteps = [
@@ -95,9 +112,8 @@ const ProfileScreen = () => {
         setProfilePic(data.profilePic || null);
         setProfilePhotos(Array.isArray(data.profilePhotos) ? data.profilePhotos : []);
       }
-    } catch (error: any) { // Type error
+    } catch (error: any) {
       console.error("Error fetching profile:", error);
-      Alert.alert("Error", `Failed to load profile data: ${error.message || "Please try again."}`);
     } finally {
       setIsProfileDataLoading(false);
     }
@@ -145,9 +161,8 @@ const ProfileScreen = () => {
         { merge: true }
       );
       Alert.alert("Success", "Profile picture updated!");
-    } catch (error: any) { 
+    } catch (error: any) {
       console.error("Error uploading profile picture:", error);
-      Alert.alert("Upload failed", `Could not upload profile picture: ${error.message || "Please try again."}`);
     } finally {
       setLoading(false);
     }
@@ -166,9 +181,8 @@ const ProfileScreen = () => {
         { merge: true }
       );
       Alert.alert("Success", "Profile updated!");
-    } catch (error: any) { 
+    } catch (error: any) {
       console.error("Error updating profile:", error);
-      Alert.alert("Error", `Failed to update profile: ${error.message || "Please try again."}`);
     } finally {
       setLoading(false);
     }
@@ -202,7 +216,7 @@ const ProfileScreen = () => {
         setProfilePhotos(trimmed);
         await setDoc(doc(db, "users", user.uid), { profilePhotos: trimmed }, { merge: true });
       } catch (e: any) {
-        Alert.alert("Upload failed", e?.message || "Could not add photo.");
+        console.error("Upload failed (add photo)", e?.message ?? e);
       } finally {
         setLoading(false);
       }
@@ -217,7 +231,7 @@ const ProfileScreen = () => {
       await setDoc(doc(db, "users", user!.uid), { profilePhotos: next }, { merge: true });
     } catch (e: any) {
       setProfilePhotos(profilePhotos);
-      Alert.alert("Error", e?.message || "Could not remove photo.");
+      console.error("Error removing photo", e?.message ?? e);
     }
   };
 
@@ -257,14 +271,112 @@ const ProfileScreen = () => {
         )}
 
         <View style={styles.headerContainer}>
-           <TouchableOpacity
-            onPress={() => navigation.goBack()} 
-            style={globalStyles.backButton || globalStyles.primaryButton} 
+          <TouchableOpacity
+            onPress={() => navigation.goBack()}
+            style={globalStyles.backButton || globalStyles.primaryButton}
           >
             <Ionicons name="arrow-back" size={FONT_SIZES.xxlarge} color={colors.textPrimary} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Edit Profile</Text>
+          <Text style={[styles.headerTitle, { flex: 1 }]}>Edit Profile</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <TouchableOpacity
+              onPress={async () => {
+                if (theme === 'dark') {
+                  if (showThemeHint) {
+                    try { await AsyncStorage.setItem(THEME_HINT_SEEN_KEY, "true"); } catch {}
+                    setShowThemeHint(false);
+                  }
+                  toggleTheme();
+                }
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons
+                name="sunny"
+                size={22}
+                color={theme === 'light' ? colors.primary : (colors.textSecondary || colors.secondaryText)}
+              />
+            </TouchableOpacity>
+            <Switch
+              value={theme === 'dark'}
+              onValueChange={async (value) => {
+                if (showThemeHint) {
+                  try { await AsyncStorage.setItem(THEME_HINT_SEEN_KEY, "true"); } catch {}
+                  setShowThemeHint(false);
+                }
+                toggleTheme();
+              }}
+              trackColor={{ false: colors.borderColor, true: colors.primary }}
+              thumbColor="#FFFFFF"
+            />
+            <TouchableOpacity
+              onPress={async () => {
+                if (theme === 'light') {
+                  if (showThemeHint) {
+                    try { await AsyncStorage.setItem(THEME_HINT_SEEN_KEY, "true"); } catch {}
+                    setShowThemeHint(false);
+                  }
+                  toggleTheme();
+                }
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons
+                name="moon"
+                size={22}
+                color={theme === 'dark' ? colors.primary : (colors.textSecondary || colors.secondaryText)}
+              />
+            </TouchableOpacity>
+          </View>
         </View>
+
+        {showThemeHint === true && (
+          <View
+            style={{
+              position: 'absolute',
+              top: 56,
+              right: 12,
+              left: 16,
+              alignItems: 'flex-end',
+              zIndex: 10,
+            }}
+            pointerEvents="box-none"
+          >
+            {/* Pointer (triangle) pointing up at the theme toggle */}
+            <View
+              style={{
+                width: 0,
+                height: 0,
+                borderLeftWidth: 8,
+                borderRightWidth: 8,
+                borderBottomWidth: 10,
+                borderLeftColor: 'transparent',
+                borderRightColor: 'transparent',
+                borderBottomColor: colors.primary + '22',
+                marginRight: 20,
+              }}
+            />
+            <View
+              style={{
+                backgroundColor: colors.primary + '22',
+                paddingVertical: 10,
+                paddingHorizontal: 14,
+                borderRadius: 16,
+                borderTopRightRadius: 4,
+                maxWidth: 280,
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.15,
+                shadowRadius: 6,
+                elevation: 4,
+              }}
+            >
+              <Text style={{ fontSize: 13, color: colors.text }}>
+                Tap sun or moon to switch light or dark mode
+              </Text>
+            </View>
+          </View>
+        )}
 
         {/* Tinder-style profile completion progress */}
         <View style={[styles.progressCard, { backgroundColor: colors.cardBackground || colors.background, borderColor: colors.borderColor }]}>

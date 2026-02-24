@@ -87,7 +87,6 @@ const GroupDetailsScreen = () => {
         }
       } catch (error: any) {
         console.error("Error fetching group details:", error);
-        Alert.alert("Error", "Failed to load group details.");
         navigation.goBack();
       } finally {
         setLoading(false);
@@ -121,7 +120,7 @@ const GroupDetailsScreen = () => {
         await uploadAndUpdateImage(result.assets[0].uri);
       }
     } catch (error: any) {
-      Alert.alert('Error', `Failed to pick image: ${error.message}`);
+      console.error('Failed to pick image', error.message ?? error);
     }
   };
 
@@ -147,7 +146,6 @@ const GroupDetailsScreen = () => {
       Alert.alert("Success", "Profile picture updated!");
     } catch (error: any) {
       console.error('Image upload error:', error);
-      Alert.alert('Upload Error', `Failed to upload image: ${error.message}`);
     } finally {
       setUploadingImage(false);
     }
@@ -170,7 +168,6 @@ const GroupDetailsScreen = () => {
       Alert.alert("Success", "Group details updated!");
     } catch (error: any) {
       console.error("Error saving group details:", error);
-      Alert.alert("Error", `Failed to save changes: ${error.message || "Please try again."}`);
     } finally {
       setLoading(false);
     }

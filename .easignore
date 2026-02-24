@@ -1,0 +1,38 @@
+# Same as .gitignore (EAS uses only .easignore when present)
+# https://docs.expo.dev/build-reference/easignore/
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*-firebase-adminsdk-*.json
+*-service-account.json
+*firebase-adminsdk*.json
+communitychat-*-*.json
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.DS_Store
+*.pem
+.env*.local
+.env
+.env.local
+functions/.env
+functions/.env.local
+*.tsbuildinfo
+
+# Extra exclusions to reduce archive size and avoid Gradle cache issues
+.git/
+android/.gradle/
+android/app/build/
+android/build/
+*.log
+coverage/
+__tests__/

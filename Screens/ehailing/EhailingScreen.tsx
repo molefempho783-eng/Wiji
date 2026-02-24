@@ -634,7 +634,7 @@ const EhailingScreen: React.FC = () => {
         speed: 16,
       }).start();
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "Could not create ride.");
+      console.error("Could not create ride", e?.message ?? e);
     }
   }
 
@@ -683,7 +683,7 @@ const EhailingScreen: React.FC = () => {
       setChoosingDriver(false);
       Alert.alert("Ride requested", "We’ve notified your chosen driver.");
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "Could not create ride.");
+      console.error("Could not create ride", e?.message ?? e);
     } finally {
       setPicking(null);
     }
@@ -703,7 +703,7 @@ const EhailingScreen: React.FC = () => {
     try {
       const ride = await getRideOnce(rideId);
       if (!ride) {
-        Alert.alert("Error", "Ride not found.");
+        console.error("Ride not found");
         return;
       }
       if (ride.status !== "on_trip") {
@@ -731,9 +731,9 @@ const EhailingScreen: React.FC = () => {
         return;
       }
 
-      Alert.alert("Error", "Unexpected payment status.");
+      console.error("Unexpected payment status");
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "Could not complete ride.");
+      console.error("Could not complete ride", e?.message ?? e);
     }
   };
 
@@ -762,7 +762,7 @@ const EhailingScreen: React.FC = () => {
       await setDriverBusy(false); // free driver if this was the active one
       Alert.alert("Ride cancelled", "Your ride was cancelled.");
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "Could not cancel ride.");
+      console.error("Could not cancel ride", e?.message ?? e);
     }
   };
 
@@ -785,7 +785,7 @@ const EhailingScreen: React.FC = () => {
         await setDriverBusy(false); // ensure cleared on offline
       }
     } catch (e: any) {
-      Alert.alert("Error", e?.message ?? "Could not update status.");
+      console.error("Could not update status", e?.message ?? e);
     }
   };
 
@@ -1326,7 +1326,7 @@ const EhailingScreen: React.FC = () => {
                               await setDriverRideType(uid, t);
                               setDriverProfile((p) => (p ? { ...p, rideType: t } : p));
                             } catch (e: any) {
-                              Alert.alert("Error", e?.message ?? "Could not set car type.");
+                              console.error("Could not set car type", e?.message ?? e);
                             }
                           }}
                           style={{
@@ -1396,7 +1396,7 @@ const EhailingScreen: React.FC = () => {
                                 });
                                 await setDriverBusy(true); // now busy
                               } catch (e: any) {
-                                Alert.alert("Error", e?.message ?? "Could not accept.");
+                                console.error("Could not accept", e?.message ?? e);
                               }
                             }}
                           >
@@ -1412,7 +1412,7 @@ const EhailingScreen: React.FC = () => {
                                   updatedAt: serverTimestamp(),
                                 });
                               } catch (e: any) {
-                                Alert.alert("Error", e?.message ?? "Could not decline.");
+                                console.error("Could not decline", e?.message ?? e);
                               }
                             }}
                           >
@@ -1465,7 +1465,7 @@ const EhailingScreen: React.FC = () => {
                                   updatedAt: serverTimestamp(),
                                 });
                               } catch (e: any) {
-                                Alert.alert("Error", e?.message ?? "Could not set arrived.");
+                                console.error("Could not set arrived", e?.message ?? e);
                               }
                             }}
                           >
@@ -1482,7 +1482,7 @@ const EhailingScreen: React.FC = () => {
                                   updatedAt: serverTimestamp(),
                                 });
                               } catch (e: any) {
-                                Alert.alert("Error", e?.message ?? "Could not start trip.");
+                                console.error("Could not start trip", e?.message ?? e);
                               }
                             }}
                           >

@@ -135,7 +135,6 @@ const CreateBusinessScreen = () => {
       navigation.goBack();
     } catch (e) {
       console.error('Error creating business:', e);
-      Alert.alert('Error', 'Failed to create business. Please try again.');
     } finally {
       setLoading(false);
     }

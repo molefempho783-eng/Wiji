@@ -62,7 +62,6 @@ const EditBusinessScreen = () => {
         setCatalog(data.catalog || []);
       } catch (err) {
         console.error('Error loading business:', err);
-        Alert.alert('Error', 'Failed to load business.');
       } finally {
         setLoading(false);
       }
@@ -145,9 +144,9 @@ const EditBusinessScreen = () => {
       location: updatedDoc.location,
       type: updatedDoc.type,
       catalog: updatedDoc.catalog,
-    });    } catch (e) {
+    });
+    } catch (e) {
       console.error('Error updating business:', e);
-      Alert.alert('Error', 'Failed to update business.');
     } finally {
       setLoading(false);
     }

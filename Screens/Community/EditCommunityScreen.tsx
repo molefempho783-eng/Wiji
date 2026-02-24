@@ -145,7 +145,6 @@ const EditCommunityScreen = () => {
               Alert.alert("Deleted", `"${groupName}" has been removed.`);
             } catch (error) {
               console.error("Error deleting group:", error);
-              Alert.alert("Error", "Failed to delete group.");
             }
           },
         },
@@ -225,7 +224,6 @@ const EditCommunityScreen = () => {
 navigation.navigate("Tabs", { screen: "CommunityScreen" });
             } catch (error) {
               console.error("Error deleting community:", error);
-              Alert.alert("Error", "Failed to delete community.");
             } finally {
               setLoading(false);
             }
@@ -311,7 +309,6 @@ navigation.navigate("Tabs", { screen: "CommunityScreen" });
       navigation.goBack();
     } catch (error) {
       console.error("Error updating community:", error);
-      Alert.alert("Error", "Failed to update community.");
     } finally {
       setLoading(false);
     }
@@ -358,16 +355,17 @@ navigation.navigate("Tabs", { screen: "CommunityScreen" });
           disabled={loading || isPickingImage}
         >
           {communityLogoUri ? (
-          <Image
+            <Image
               source={{ uri: communityLogoUri }}
-            style={styles.logoImage}
-          />
+              style={styles.logoImage}
+              resizeMode="cover"
+            />
           ) : (
             <View
               style={{
-                width: styles.logoImage.width,
-                height: styles.logoImage.height,
-                borderRadius: styles.logoImage.width / 2,
+                width: 120,
+                height: 120,
+                borderRadius: 60,
                 backgroundColor: colors.primaryLight,
                 alignItems: 'center',
                 justifyContent: 'center',

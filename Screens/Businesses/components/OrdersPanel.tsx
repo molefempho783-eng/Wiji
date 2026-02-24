@@ -153,7 +153,6 @@ export default function OrdersPanel({ businessId }: { businessId?: string }) {
       });
     } catch (e: any) {
       console.error('Update status failed', e);
-      Alert.alert('Update failed', e?.message || 'Could not update status.');
     }
   };
 
