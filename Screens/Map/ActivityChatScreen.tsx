@@ -30,6 +30,7 @@ import {
   orderBy,
   onSnapshot,
   updateDoc,
+  deleteDoc,
   serverTimestamp,
   increment,
 } from 'firebase/firestore';
@@ -37,6 +38,7 @@ import { getStorage, ref, uploadBytesResumable, getDownloadURL } from 'firebase/
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as Clipboard from 'expo-clipboard';
 import { Video, ResizeMode } from 'expo-av';
 import ImageViewing from 'react-native-image-viewing';
 import { useTheme } from '../context/ThemeContext';
@@ -48,6 +50,28 @@ type ActivityChatScreenRouteProp = RouteProp<RootStackParamList, 'ActivityChatSc
 type ActivityChatScreenNavigationProp = StackNavigationProp<RootStackParamList, 'ActivityChatScreen'>;
 
 const AVATAR_PLACEHOLDER = require('../../assets/avatar-placeholder.png');
+type PinnedMessage = { messageId: string; text: string; senderId?: string; pinnedBy?: string; pinnedAt?: any };
+const URL_REGEX = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+const cleanTrailingPunctuation = (value: string) => value.replace(/[),.!?;:]+$/g, '');
+const normalizeUrl = (value: string) => {
+  const cleaned = cleanTrailingPunctuation(value.trim());
+  if (!cleaned) return '';
+  return /^https?:\/\//i.test(cleaned) ? cleaned : `https://${cleaned}`;
+};
+const splitMessageByUrls = (text: string) => {
+  const parts: Array<{ text: string; isLink: boolean }> = [];
+  let lastIndex = 0;
+  const matches = Array.from(text.matchAll(URL_REGEX));
+  for (const match of matches) {
+    const found = match[0];
+    const start = match.index ?? 0;
+    if (start > lastIndex) parts.push({ text: text.slice(lastIndex, start), isLink: false });
+    parts.push({ text: found, isLink: true });
+    lastIndex = start + found.length;
+  }
+  if (lastIndex < text.length) parts.push({ text: text.slice(lastIndex), isLink: false });
+  return parts.length > 0 ? parts : [{ text, isLink: false }];
+};
 
 const getFileTypeFromExtension = (fileName: string): 'image' | 'video' | 'file' => {
   const ext = fileName.split('.').pop()?.toLowerCase() || '';
@@ -78,6 +102,9 @@ export default function ActivityChatScreen() {
   const [userProfiles, setUserProfiles] = useState<Record<string, { profilePic?: string; username: string }>>({});
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
   const [showAttachmentOptions, setShowAttachmentOptions] = useState(false);
+  const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
+  const [showMessageOptions, setShowMessageOptions] = useState(false);
+  const [pinnedMessage, setPinnedMessage] = useState<PinnedMessage | null>(null);
   const [inputBarHeight, setInputBarHeight] = useState(56);
   const [mediaViewerVisible, setMediaViewerVisible] = useState(false);
   const [mediaItems, setMediaItems] = useState<{ uri: string; type: 'image' | 'video' }[]>([]);
@@ -175,6 +202,16 @@ export default function ActivityChatScreen() {
     });
     return () => unsub();
   }, [canAccess, activityId, fetchUserProfiles]);
+
+  useEffect(() => {
+    if (!canAccess) return;
+    const unsub = onSnapshot(chatRef, (snap) => {
+      if (snap.exists()) {
+        setPinnedMessage((snap.data()?.pinnedMessage as PinnedMessage) || null);
+      }
+    });
+    return () => unsub();
+  }, [canAccess, activityId]);
 
   useEffect(() => {
     if (participants.length > 0) fetchUserProfiles(participants);
@@ -369,6 +406,84 @@ export default function ActivityChatScreen() {
     sendMessage({ text: newMessage.trim() });
   };
 
+  const openMessageLink = async (rawUrl: string) => {
+    const url = normalizeUrl(rawUrl);
+    if (!url) return;
+    try {
+      const canOpen = await Linking.canOpenURL(url);
+      if (!canOpen) {
+        Alert.alert('Invalid link', 'This link cannot be opened.');
+        return;
+      }
+      await Linking.openURL(url);
+    } catch (error) {
+      console.error('Failed to open link:', error);
+      Alert.alert('Error', 'Could not open this link.');
+    }
+  };
+
+  const copyMessage = async (text: string) => {
+    try {
+      await Clipboard.setStringAsync(text);
+      Alert.alert('Copied', 'Message copied to clipboard');
+    } catch (error) {
+      console.error('Failed to copy message:', error);
+    }
+  };
+
+  const deleteMessage = async (messageId: string) => {
+    if (!currentUserId) return;
+    try {
+      const messageRef = doc(db, 'activityChats', activityId, 'messages', messageId);
+      const messageSnap = await getDoc(messageRef);
+      if (!messageSnap.exists()) return;
+      if (messageSnap.data().senderId !== currentUserId) {
+        Alert.alert('Permission denied', 'You can only delete your own messages.');
+        return;
+      }
+      await deleteDoc(messageRef);
+    } catch (error) {
+      console.error('Failed to delete message:', error);
+      Alert.alert('Error', 'Could not delete this message.');
+    } finally {
+      setShowMessageOptions(false);
+      setSelectedMessage(null);
+    }
+  };
+
+  const getPinPreview = (msg: Message) => {
+    if (msg.text && msg.text.trim()) return msg.text.trim().slice(0, 160);
+    if (msg.mediaType === 'image') return 'Image';
+    if (msg.mediaType === 'video') return 'Video';
+    if (msg.mediaType === 'file') return msg.fileName ? `File: ${msg.fileName}` : 'File';
+    return 'Pinned message';
+  };
+
+  const togglePinSelectedMessage = async () => {
+    if (!selectedMessage || !currentUserId) return;
+    try {
+      if (pinnedMessage?.messageId === selectedMessage.id) {
+        await updateDoc(chatRef, { pinnedMessage: null });
+      } else {
+        await updateDoc(chatRef, {
+          pinnedMessage: {
+            messageId: selectedMessage.id,
+            text: getPinPreview(selectedMessage),
+            senderId: selectedMessage.senderId,
+            pinnedBy: currentUserId,
+            pinnedAt: serverTimestamp(),
+          },
+        });
+      }
+    } catch (error) {
+      console.error('Failed to pin message:', error);
+      Alert.alert('Error', 'Could not update pinned message.');
+    } finally {
+      setShowMessageOptions(false);
+      setSelectedMessage(null);
+    }
+  };
+
   const openUnifiedMediaViewer = (messageIndex: number) => {
     const items = messages
       .filter((msg) => msg.mediaUrl && (msg.mediaType === 'image' || msg.mediaType === 'video'))
@@ -426,7 +541,12 @@ export default function ActivityChatScreen() {
     const profile = userProfiles[item.senderId] || { username: 'User' };
 
     return (
-      <View
+      <TouchableOpacity
+        activeOpacity={1}
+        onLongPress={() => {
+          setSelectedMessage(item);
+          setShowMessageOptions(true);
+        }}
         style={[
           styles.messageBubble,
           isCurrentUser ? styles.myMessageBubble : styles.otherMessageBubble,
@@ -454,11 +574,8 @@ export default function ActivityChatScreen() {
                 <View style={{ width: 200, height: 150, backgroundColor: colors.border || '#E0E0E0', borderRadius: 8, justifyContent: 'center', alignItems: 'center', marginBottom: SPACING.small }}>
                   <ActivityIndicator size="large" color={colors.primary} />
                 </View>
-                <View style={{ height: 4, backgroundColor: colors.border || '#E0E0E0', borderRadius: 2, overflow: 'hidden' }}>
-                  <View style={{ height: '100%', width: `${item.uploadProgress || 0}%`, backgroundColor: colors.primary }} />
-                </View>
                 <Text style={[styles.timestampText, { marginTop: 4, fontSize: FONT_SIZES.xsmall }]}>
-                  Uploading {item.uploadProgress || 0}%
+                  Uploading media...
                 </Text>
               </>
             )}
@@ -502,7 +619,24 @@ export default function ActivityChatScreen() {
         ) : null}
 
         {item.text ? (
-          <Text style={isCurrentUser ? styles.myMessageText : styles.otherMessageText}>{item.text}</Text>
+          <Text style={isCurrentUser ? styles.myMessageText : styles.otherMessageText}>
+            {splitMessageByUrls(item.text).map((part, idx) =>
+              part.isLink ? (
+                <Text
+                  key={`link_${item.id}_${idx}`}
+                  style={{
+                    textDecorationLine: 'underline',
+                    color: isCurrentUser ? '#D7EEFF' : colors.primary,
+                  }}
+                  onPress={() => openMessageLink(part.text)}
+                >
+                  {part.text}
+                </Text>
+              ) : (
+                <Text key={`txt_${item.id}_${idx}`}>{part.text}</Text>
+              )
+            )}
+          </Text>
         ) : null}
 
         {!item.uploading && (
@@ -511,7 +645,7 @@ export default function ActivityChatScreen() {
             {!isCurrentUser && profile.username ? ` · ${profile.username}` : ''}
           </Text>
         )}
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -562,6 +696,28 @@ export default function ActivityChatScreen() {
           </TouchableOpacity>
         )}
       </View>
+      {pinnedMessage ? (
+        <View
+          style={{
+            marginHorizontal: 12,
+            marginTop: 6,
+            marginBottom: 6,
+            borderRadius: 10,
+            paddingHorizontal: 10,
+            paddingVertical: 8,
+            backgroundColor: colors.cardBackground,
+            borderWidth: 1,
+            borderColor: colors.border,
+            flexDirection: 'row',
+            alignItems: 'center',
+          }}
+        >
+          <Ionicons name="pin" size={14} color={colors.primary} style={{ marginRight: 8 }} />
+          <Text style={{ color: colors.textSecondary, flex: 1 }} numberOfLines={1}>
+            {pinnedMessage.text}
+          </Text>
+        </View>
+      ) : null}
 
       <FlatList
         ref={flatListRef}
@@ -598,6 +754,71 @@ export default function ActivityChatScreen() {
           <Text style={styles.sendButtonText}>Send</Text>
         </TouchableOpacity>
       </View>
+
+      <Modal
+        visible={showMessageOptions}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setShowMessageOptions(false);
+          setSelectedMessage(null);
+        }}
+      >
+        <Pressable
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }}
+          onPress={() => {
+            setShowMessageOptions(false);
+            setSelectedMessage(null);
+          }}
+        >
+          <Pressable
+            style={{ backgroundColor: colors.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: insets.bottom + 20, paddingTop: 20 }}
+            onPress={(e) => e.stopPropagation()}
+          >
+            {selectedMessage && (
+              <>
+                {selectedMessage.text && selectedMessage.text.trim().length > 0 && (
+                  <TouchableOpacity
+                    style={{ paddingVertical: 16, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: colors.border }}
+                    onPress={async () => {
+                      await copyMessage(selectedMessage.text || '');
+                      setShowMessageOptions(false);
+                      setSelectedMessage(null);
+                    }}
+                  >
+                    <Text style={{ color: colors.text, fontSize: 16 }}>Copy</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={{ paddingVertical: 16, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: colors.border }}
+                  onPress={togglePinSelectedMessage}
+                >
+                  <Text style={{ color: colors.text, fontSize: 16 }}>
+                    {pinnedMessage?.messageId === selectedMessage.id ? 'Unpin' : 'Pin'}
+                  </Text>
+                </TouchableOpacity>
+                {selectedMessage.senderId === currentUserId && (
+                  <TouchableOpacity
+                    style={{ paddingVertical: 16, paddingHorizontal: 20 }}
+                    onPress={() => deleteMessage(selectedMessage.id)}
+                  >
+                    <Text style={{ color: '#FF3B30', fontSize: 16, fontWeight: '600' }}>Delete</Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+            <TouchableOpacity
+              style={{ paddingVertical: 16, paddingHorizontal: 20, marginTop: 10, borderTopWidth: 1, borderTopColor: colors.border }}
+              onPress={() => {
+                setShowMessageOptions(false);
+                setSelectedMessage(null);
+              }}
+            >
+              <Text style={{ color: colors.text, fontSize: 16, textAlign: 'center' }}>Cancel</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       <Modal visible={showAttachmentOptions} transparent animationType="fade" onRequestClose={() => setShowAttachmentOptions(false)}>
         <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }} onPress={() => setShowAttachmentOptions(false)}>

@@ -41,6 +41,9 @@ async function callCallable<TPayload, TResponse = any>(
   } catch (e: any) {
     const msg = e?.message ?? '';
     const code = e?.code ?? '';
+    const isExpectedWalletLockError =
+      name === 'verifyGroupWalletAccessPin' &&
+      (code === 'not-found' || code === 'permission-denied');
 
     // One graceful retry if token/auth caused it
     const looksUnauthed =
@@ -59,9 +62,12 @@ async function callCallable<TPayload, TResponse = any>(
       }
     }
 
-    console.log(`Callable ${name} failed:`, msg || e);
-    if (e?.code) console.log('Functions code:', e.code);
-    if (e?.details) console.log('Functions details:', e.details);
+    // Keep console noise low for expected wallet lock states handled by UI.
+    if (!isExpectedWalletLockError) {
+      console.log(`Callable ${name} failed:`, msg || e);
+      if (e?.code) console.log('Functions code:', e.code);
+      if (e?.details) console.log('Functions details:', e.details);
+    }
     throw e;
   }
 }
@@ -109,6 +115,20 @@ export async function transferFunds(_senderId: string, recipientId: string, amou
     amount,
   });
   return data; // { status: 'SUCCESS' }
+}
+
+export async function getTransactions(limit = 20, cursor?: string) {
+  return callCallable<
+    { limit?: number; cursor?: string },
+    { items?: any[]; nextCursor?: string | null }
+  >('getTransactions', { limit, ...(cursor ? { cursor } : {}) });
+}
+
+export async function syncPersonalOnChainWallet(onchainAddress: string) {
+  return callCallable<
+    { onchainAddress: string },
+    { ok?: boolean; address?: string; balanceSats?: number; txCount?: number; inserted?: number }
+  >('syncPersonalOnChainWallet', { onchainAddress });
 }
 
 // ---------- Crypto Wallet Functions ----------
@@ -159,4 +179,77 @@ export async function verifyCryptoPayment(
     token: data.token,
     transactionHash: data.transactionHash,
   };
+}
+
+/** Creator-only: assigns a unique P2WPKH address for the group (server HD wallet). */
+export async function provisionGroupOnChainWallet(
+  groupId: string,
+  communityId: string,
+  walletAccessPin?: string
+) {
+  return callCallable<
+    { groupId: string; communityId: string; walletAccessPin?: string },
+    {
+      ok?: boolean;
+      onchainAddress?: string;
+      derivationIndex?: number;
+      alreadyProvisioned?: boolean;
+    }
+  >('provisionGroupOnChainWallet', {
+    groupId,
+    communityId,
+    ...(walletAccessPin != null ? { walletAccessPin } : {}),
+  });
+}
+
+/** Unlock group wallet UI (passcode set when the group was created with a wallet). */
+export async function verifyGroupWalletAccessPin(groupId: string, pin: string) {
+  return callCallable<{ groupId: string; pin: string }, { ok?: boolean; legacyNoPin?: boolean }>(
+    'verifyGroupWalletAccessPin',
+    { groupId, pin }
+  );
+}
+
+/** Any group member: refresh balance + transaction list from mempool.space. */
+export async function syncGroupOnChainWallet(groupId: string) {
+  return callCallable<{ groupId: string }, { ok?: boolean; balanceSats?: number; txCount?: number }>(
+    'syncGroupOnChainWallet',
+    { groupId }
+  );
+}
+
+/** Spend node/LN wallet balance on-chain to the group's receive address (see backend /internal/send-onchain). */
+export async function depositToGroupFromWallet(params: {
+  groupId: string;
+  amountSats: number;
+  senderPubKey: string;
+}) {
+  return callCallable<
+    { groupId: string; amountSats: number; senderPubKey: string },
+    { ok?: boolean; txid?: string }
+  >('depositToGroupFromWallet', params);
+}
+
+/** Group creator: send sats from group wallet to any on-chain address. */
+export async function sendFromGroupWallet(params: {
+  groupId: string;
+  address: string;
+  amountSats: number;
+}) {
+  return callCallable<
+    { groupId: string; address: string; amountSats: number },
+    { ok?: boolean; txid?: string }
+  >("sendFromGroupWallet", params);
+}
+
+/** Personal wallet: send sats on-chain to any BTC address. */
+export async function sendFromWalletOnChain(params: {
+  address: string;
+  amountSats: number;
+  senderPubKey: string;
+}) {
+  return callCallable<
+    { address: string; amountSats: number; senderPubKey: string },
+    { ok?: boolean; txid?: string; feeSats?: number }
+  >('sendFromWalletOnChain', params);
 }

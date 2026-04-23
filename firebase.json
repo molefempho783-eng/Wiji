@@ -1,4 +1,7 @@
 {
+  "react-native": {
+    "messaging_android_notification_color": "@color/notification_icon_color"
+  },
   "firestore": {
     "rules": "firestore.rules"
   },
@@ -16,7 +19,7 @@
         "firebase-debug.*.log",
         "*.local"
       ],
-    "predeploy": [
+      "predeploy": [
       "npm --prefix \"$RESOURCE_DIR\" install",
       "npm --prefix \"$RESOURCE_DIR\" run build"
     ]

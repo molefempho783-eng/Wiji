@@ -19,6 +19,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import OnboardingScreen from "./Screens/OnboardingScreen";
 import AuthScreen from "./Screens/AuthScreen";
+import TermsAndConditionsScreen from "./Screens/Legal/TermsAndConditionsScreen";
+import PrivacyPolicyScreen from "./Screens/Legal/PrivacyPolicyScreen";
 import CommunityScreen from "./Screens/Community/CommunityScreen";
 import CommunityDetailScreen from "./Screens/Community/CommunityDetailScreen";
 import CreateCommunityScreen from "./Screens/Community/CreateCommunityScreen";
@@ -29,22 +31,14 @@ import EditCommunityScreen from "./Screens/Community/EditCommunityScreen";
 import ChatRoomScreen from "./Screens/Users/ChatRoomScreen";
 import GroupDetailsScreen from "./Screens/Community/Group/GroupDetailsScreen";
 import UserScreen from "./Screens/Users/UsersScreen";
-import BusinessesScreen from "./Screens/Businesses/BusinessesScreen";
-import CreateBusinessScreen from "./Screens/Businesses/CreateBusinessScreen";
-import AddCatalogScreen from "./Screens/Businesses/AddCatalogScreen";
-import EditBusinessScreen from "./Screens/Businesses/EditBusinessScreen";
-import CatalogEditorScreen from "./Screens/Businesses/CatalogEditorScreen";
-import BusinessChatScreen from "./Screens/Businesses/BusinessChatScreen";
-import MyBusinessScreen from "./Screens/Businesses/MyBusinessScreen";
 import CreateGroupChatScreen from "./Screens/Community/Group/CreateGroupChatScreen";
-import EhailingScreen from "./Screens/ehailing/EhailingScreen";
-import BeADriverScreen from "./Screens/ehailing/BeADriverScreen";
+
 import MapScreen from "./Screens/Map/MapScreen";
 import ActivityChatScreen from "./Screens/Map/ActivityChatScreen";
 import ActivityDetailScreen from "./Screens/Map/ActivityDetailScreen";
-import ShopScreen from "./Screens/Businesses/ShopScreen";
-import GroupWalletScreen from "./Screens/Community/Group/GroupWalletScreen";
+import CreateMapSpecialScreen from "./Screens/Map/CreateMapSpecialScreen";
 import { registerForPushNotificationsAsync, savePushTokenToUser } from './hooks/useRegisterPushToken';
+import { primeKlipyKeyFromFirebase } from './services/klipy';
 import { LogBox } from 'react-native';
 
 // Keep errors in terminal only; do not show LogBox/error overlay in the app
@@ -179,6 +173,11 @@ const TabsNavigator = () => {
 const MainNavigator = () => {
   const { user } = useAuth();
   const [hasSeenOnboarding, setHasSeenOnboarding] = React.useState<boolean | null>(null);
+
+  // Prime KLIPY API key from Firebase Remote Config (parameter: klipy_api_key) so GIF picker works without env in repo
+  useEffect(() => {
+    primeKlipyKeyFromFirebase();
+  }, []);
 
   // Check if user has seen onboarding
   useEffect(() => {
@@ -363,30 +362,25 @@ const MainNavigator = () => {
               <RootStack.Screen name="GroupChatScreen" component={GroupChatScreen} />
               <RootStack.Screen name="ActivityChatScreen" component={ActivityChatScreen} />
               <RootStack.Screen name="ActivityDetailScreen" component={ActivityDetailScreen} />
+              <RootStack.Screen name="CreateMapSpecialScreen" component={CreateMapSpecialScreen} />
               <RootStack.Screen name="ChatRoomScreen" component={ChatRoomScreen} />
               <RootStack.Screen name="CommunityDetailScreen" component={CommunityDetailScreen} />
               <RootStack.Screen name="EditCommunityScreen" component={EditCommunityScreen} />
               <RootStack.Screen name="UserProfileScreen" component={UserProfileScreen} />
               <RootStack.Screen name="GroupDetailsScreen" component={GroupDetailsScreen} />
               <RootStack.Screen name="CreateCommunityScreen" component={CreateCommunityScreen} />
-              <RootStack.Screen name="CreateBusinessScreen" component={CreateBusinessScreen} />
-              <RootStack.Screen name="AddCatalogScreen" component={AddCatalogScreen} />
-              <RootStack.Screen name="EditBusinessScreen" component={EditBusinessScreen} />
-              <RootStack.Screen name="CatalogEditorScreen" component={CatalogEditorScreen} />
-              <RootStack.Screen name="BusinessChatScreen" component={BusinessChatScreen} />
-              <RootStack.Screen name="MyBusinessScreen" component={MyBusinessScreen} />
               <RootStack.Screen name="CreateGroupChatScreen" component={CreateGroupChatScreen} />
-              <RootStack.Screen name="BeADriverScreen" component={BeADriverScreen} />
               <RootStack.Screen name="ProfileScreen" component={ProfileScreen} />
-              <RootStack.Screen name="ShopScreen" component={ShopScreen} />
-              <RootStack.Screen name="GroupWalletScreen" component={GroupWalletScreen} />
-
+              <RootStack.Screen name="TermsAndConditionsScreen" component={TermsAndConditionsScreen} />
+              <RootStack.Screen name="PrivacyPolicyScreen" component={PrivacyPolicyScreen} />
             </>
           ) : (
             <>
               {/* Always register both screens for unauthenticated users */}
               <RootStack.Screen name="OnboardingScreen" component={OnboardingScreen} />
               <RootStack.Screen name="AuthScreen" component={AuthScreen} />
+              <RootStack.Screen name="TermsAndConditionsScreen" component={TermsAndConditionsScreen} />
+              <RootStack.Screen name="PrivacyPolicyScreen" component={PrivacyPolicyScreen} />
             </>
           )}
         </RootStack.Navigator>

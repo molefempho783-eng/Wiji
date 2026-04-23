@@ -5,6 +5,7 @@ import {
   Text,
   FlatList,
   TouchableOpacity,
+  Pressable,
   ActivityIndicator,
   TextInput,
   Image,
@@ -58,6 +59,7 @@ const CommunityScreen = () => {
   const [joinedCommunityIds, setJoinedCommunityIds] = useState<Set<string>>(new Set());
   const [index, setIndex] = useState(0);
   const [routes, setRoutes] = useState([{ key: 'explore', title: 'Explore' }]);
+  const [showCreateCommunityHint, setShowCreateCommunityHint] = useState(false);
   const [totalUnreadDMs, setTotalUnreadDMs] = useState(0);
   const [unreadByCommunityId, setUnreadByCommunityId] = useState<Record<string, number>>({});
 
@@ -721,12 +723,41 @@ renderTabBar={(props) => (
           )}
         />
 
-      <TouchableOpacity
+      {showCreateCommunityHint && (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            right: SPACING.large + 72,
+            bottom: TAB_BAR_CONTENT_HEIGHT + insets.bottom + SPACING.large + 16,
+            backgroundColor: colors.cardBackground,
+            borderWidth: 1,
+            borderColor: colors.borderColor,
+            borderRadius: 8,
+            paddingHorizontal: 10,
+            paddingVertical: 6,
+            zIndex: 1000,
+            elevation: 13,
+          }}
+        >
+          <Text style={{ color: colors.text, fontSize: FONT_SIZES.small }}>
+            Create community
+          </Text>
+        </View>
+      )}
+      <Pressable
         style={[styles.fab, { bottom: TAB_BAR_CONTENT_HEIGHT + insets.bottom + SPACING.large }]}
-        onPress={() => navigation.navigate("CreateCommunityScreen")}
+        onPress={() => {
+          setShowCreateCommunityHint(false);
+          navigation.navigate("CreateCommunityScreen");
+        }}
+        onLongPress={() => setShowCreateCommunityHint(true)}
+        onPressOut={() => setShowCreateCommunityHint(false)}
+        onHoverIn={() => setShowCreateCommunityHint(true)}
+        onHoverOut={() => setShowCreateCommunityHint(false)}
       >
         <Ionicons name="add" size={32} color={colors.buttonText} />
-      </TouchableOpacity>
+      </Pressable>
     </View>
   );
 };

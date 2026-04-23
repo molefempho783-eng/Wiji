@@ -18,9 +18,9 @@ import {
   Animated,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { RouteProp, useRoute, useNavigation } from "@react-navigation/native";
+import { RouteProp, useRoute, useNavigation, useFocusEffect } from "@react-navigation/native";
 import { StackNavigationProp } from "@react-navigation/stack";
-import { RootStackParamList, Message } from "../../../types";
+import { RootStackParamList, Message, Community } from "../../../types";
 import { db, auth } from "../../../firebaseConfig";
 import {
   collection,
@@ -79,6 +79,28 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 const AVATAR_PLACEHOLDER = require("../../../assets/avatar-placeholder.png");
 
 const FALLBACK_EMOJIS = ["😀", "😂", "😍", "🔥", "🥳", "💀", "👍", "💯", "👀", "💸"];
+type PinnedMessage = { messageId: string; text: string; senderId?: string; pinnedBy?: string; pinnedAt?: any };
+const URL_REGEX = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+const cleanTrailingPunctuation = (value: string) => value.replace(/[),.!?;:]+$/g, '');
+const normalizeUrl = (value: string) => {
+  const cleaned = cleanTrailingPunctuation(value.trim());
+  if (!cleaned) return "";
+  return /^https?:\/\//i.test(cleaned) ? cleaned : `https://${cleaned}`;
+};
+const splitMessageByUrls = (text: string) => {
+  const parts: Array<{ text: string; isLink: boolean }> = [];
+  let lastIndex = 0;
+  const matches = Array.from(text.matchAll(URL_REGEX));
+  for (const match of matches) {
+    const found = match[0];
+    const start = match.index ?? 0;
+    if (start > lastIndex) parts.push({ text: text.slice(lastIndex, start), isLink: false });
+    parts.push({ text: found, isLink: true });
+    lastIndex = start + found.length;
+  }
+  if (lastIndex < text.length) parts.push({ text: text.slice(lastIndex), isLink: false });
+  return parts.length ? parts : [{ text, isLink: false }];
+};
 
 type GroupChatScreenRouteProp = RouteProp<RootStackParamList, "GroupChatScreen">;
 type GroupChatScreenNavigationProp = StackNavigationProp<RootStackParamList, "GroupChatScreen">;
@@ -96,7 +118,6 @@ const GroupChatScreen = () => {
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [userProfiles, setUserProfiles] = useState<Record<string, { profilePic?: string; username: string }>>({});
-  const [hasGroupWallet, setHasGroupWallet] = useState(false);
   const [hasPassword, setHasPassword] = useState(false);
   const [isPasswordAuthenticated, setIsPasswordAuthenticated] = useState(false);
   const [members, setMembers] = useState<string[]>([]);
@@ -107,7 +128,10 @@ const GroupChatScreen = () => {
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
   const [showMessageOptions, setShowMessageOptions] = useState(false);
   const [showAttachmentOptions, setShowAttachmentOptions] = useState(false);
+  const [pinnedMessage, setPinnedMessage] = useState<PinnedMessage | null>(null);
   const [joiningGroup, setJoiningGroup] = useState(false);
+  /** User is in joinedCommunities or is the community creator — required before joining a group. */
+  const [isCommunityMember, setIsCommunityMember] = useState(false);
 
   const scrollViewRef = useRef<ScrollView>(null);
   const { colors } = useTheme();
@@ -186,7 +210,7 @@ const GroupChatScreen = () => {
     }
   }, [passwordInput, communityId, groupId, currentUserId, storePasswordAuth]);
 
-  // 🔄 Fetch group membership and wallet status (optimized for fast initial load)
+  // 🔄 Fetch group membership (optimized for fast initial load)
   useEffect(() => {
     if (!currentUserId) {
       setIsLoading(false);
@@ -194,11 +218,25 @@ const GroupChatScreen = () => {
     }
 
     const groupDocRef = doc(db, "communities", communityId, "groupChats", groupId);
-    
+
     // Fast initial load with getDoc
     const loadInitialData = async () => {
       try {
-        const docSnap = await getDoc(groupDocRef);
+        const [docSnap, userSnap, communitySnap] = await Promise.all([
+          getDoc(groupDocRef),
+          getDoc(doc(db, "users", currentUserId)),
+          getDoc(doc(db, "communities", communityId)),
+        ]);
+
+        const joinedCommunities: string[] = userSnap.exists()
+          ? userSnap.data()?.joinedCommunities || []
+          : [];
+        const inCommunity =
+          joinedCommunities.includes(communityId) ||
+          (communitySnap.exists() &&
+            communitySnap.data()?.createdBy === currentUserId);
+        setIsCommunityMember(!!inCommunity);
+
         if (docSnap.exists()) {
           const data = docSnap.data();
           const memberIds: string[] = data.members || [];
@@ -206,7 +244,6 @@ const GroupChatScreen = () => {
 
           setMembers(memberIds);
           setIsGroupMember(isMember);
-          setHasGroupWallet(data.hasGroupWallet || false);
           setHasPassword(data.hasPassword || false);
           setIsCreator(data.createdBy === currentUserId);
           setGroupProfilePic(data.profilePic || null);
@@ -230,6 +267,7 @@ const GroupChatScreen = () => {
         }
       } catch (error) {
         console.error("Error loading group data:", error);
+        setIsCommunityMember(false);
       } finally {
         setIsLoading(false);
       }
@@ -246,10 +284,10 @@ const GroupChatScreen = () => {
           const memberIds: string[] = data.members || [];
           setMembers(memberIds);
           setIsGroupMember(memberIds.includes(currentUserId));
-          setHasGroupWallet(data.hasGroupWallet || false);
           setHasPassword(data.hasPassword || false);
           setIsCreator(data.createdBy === currentUserId);
           setGroupProfilePic(data.profilePic || null);
+          setPinnedMessage((data.pinnedMessage as PinnedMessage) || null);
         }
       },
       (err) => console.error('Group doc snapshot error:', err)
@@ -257,20 +295,69 @@ const GroupChatScreen = () => {
     return () => unsubscribe();
   }, [communityId, groupId, currentUserId, checkPasswordAuth]);
 
+  const navigateToCommunityDetail = useCallback(() => {
+    const stub: Community = {
+      id: communityId,
+      name: "",
+      createdBy: "",
+      createdAt: null as any,
+    };
+    navigation.navigate("CommunityDetailScreen", { community: stub });
+  }, [communityId, navigation]);
+
+  // After joining the community elsewhere, refresh membership when this screen is focused again
+  useFocusEffect(
+    useCallback(() => {
+      if (!currentUserId) return;
+      let active = true;
+      (async () => {
+        try {
+          const [userSnap, communitySnap] = await Promise.all([
+            getDoc(doc(db, "users", currentUserId)),
+            getDoc(doc(db, "communities", communityId)),
+          ]);
+          if (!active) return;
+          const joinedCommunities: string[] = userSnap.exists()
+            ? userSnap.data()?.joinedCommunities || []
+            : [];
+          const inCommunity =
+            joinedCommunities.includes(communityId) ||
+            (communitySnap.exists() &&
+              communitySnap.data()?.createdBy === currentUserId);
+          setIsCommunityMember(!!inCommunity);
+        } catch (e) {
+          console.error("Community membership refresh error:", e);
+        }
+      })();
+      return () => {
+        active = false;
+      };
+    }, [currentUserId, communityId])
+  );
+
   // Join this group (community members only; then they can see messages and get notifications)
   const handleJoinGroup = useCallback(async () => {
     if (!currentUserId) return;
     setJoiningGroup(true);
     try {
-      const userSnap = await getDoc(doc(db, "users", currentUserId));
+      const [userSnap, communitySnap] = await Promise.all([
+        getDoc(doc(db, "users", currentUserId)),
+        getDoc(doc(db, "communities", communityId)),
+      ]);
       const joinedCommunities: string[] = userSnap.exists()
-        ? (userSnap.data()?.joinedCommunities || [])
+        ? userSnap.data()?.joinedCommunities || []
         : [];
-      if (!joinedCommunities.includes(communityId)) {
+      const isCommunityCreator =
+        communitySnap.exists() &&
+        communitySnap.data()?.createdBy === currentUserId;
+      if (!joinedCommunities.includes(communityId) && !isCommunityCreator) {
         Alert.alert(
           "Join community first",
           "You need to be a member of this community before you can join the group.",
-          [{ text: "OK" }]
+          [
+            { text: "Cancel", style: "cancel" },
+            { text: "Go to community", onPress: navigateToCommunityDetail },
+          ]
         );
         setJoiningGroup(false);
         return;
@@ -288,7 +375,7 @@ const GroupChatScreen = () => {
     } finally {
       setJoiningGroup(false);
     }
-  }, [communityId, groupId, currentUserId]);
+  }, [communityId, groupId, currentUserId, navigateToCommunityDetail]);
 
   // 🔄 Fetch user profiles (optimized to fetch in parallel)
   const fetchUserProfiles = useCallback(async (userIds: string[]) => {
@@ -899,6 +986,56 @@ const GroupChatScreen = () => {
     sendMessage({ text: newMessage.trim() });
   };
 
+  const getPinPreview = (msg: Message) => {
+    if (msg.text && msg.text.trim()) return msg.text.trim().slice(0, 160);
+    if (msg.mediaType === "image") return "Image";
+    if (msg.mediaType === "video") return "Video";
+    if (msg.mediaType === "file") return msg.fileName ? `File: ${msg.fileName}` : "File";
+    return "Pinned message";
+  };
+
+  const togglePinSelectedMessage = async () => {
+    if (!selectedMessage || !currentUserId) return;
+    const groupRef = doc(db, "communities", communityId, "groupChats", groupId);
+    try {
+      if (pinnedMessage?.messageId === selectedMessage.id) {
+        await updateDoc(groupRef, { pinnedMessage: null });
+      } else {
+        await updateDoc(groupRef, {
+          pinnedMessage: {
+            messageId: selectedMessage.id,
+            text: getPinPreview(selectedMessage),
+            senderId: selectedMessage.senderId,
+            pinnedBy: currentUserId,
+            pinnedAt: serverTimestamp(),
+          },
+        });
+      }
+    } catch (error) {
+      console.error("Failed to toggle pin:", error);
+      Alert.alert("Error", "Could not update pinned message.");
+    } finally {
+      setShowMessageOptions(false);
+      setSelectedMessage(null);
+    }
+  };
+
+  const openMessageLink = async (rawUrl: string) => {
+    const url = normalizeUrl(rawUrl);
+    if (!url) return;
+    try {
+      const canOpen = await Linking.canOpenURL(url);
+      if (!canOpen) {
+        Alert.alert("Invalid link", "This link cannot be opened.");
+        return;
+      }
+      await Linking.openURL(url);
+    } catch (error) {
+      console.error("Failed to open link:", error);
+      Alert.alert("Error", "Could not open this link.");
+    }
+  };
+
   // 📋 Copy message to clipboard
   const copyMessage = async (text: string) => {
     try {
@@ -1147,19 +1284,6 @@ const GroupChatScreen = () => {
                   }}>
                     <ActivityIndicator size="large" color={colors.primary} />
                   </View>
-                  <View style={{
-                    height: 4,
-                    backgroundColor: colors.border || '#E0E0E0',
-                    borderRadius: 2,
-                    overflow: 'hidden',
-                    marginTop: SPACING.xsmall,
-                  }}>
-                    <View style={{
-                      height: '100%',
-                      width: `${msg.uploadProgress || 0}%`,
-                      backgroundColor: colors.primary,
-                    }} />
-                  </View>
                   <Text
                     style={[
                       styles.timestamp,
@@ -1167,7 +1291,7 @@ const GroupChatScreen = () => {
                       { marginTop: SPACING.xsmall, fontSize: FONT_SIZES.xsmall },
                     ]}
                   >
-                    Uploading {msg.uploadProgress || 0}%
+                    Uploading media...
                   </Text>
                 </>
               )}
@@ -1249,7 +1373,22 @@ const GroupChatScreen = () => {
                 isMyMessage ? styles.myMessageText : styles.otherMessageText,
               ]}
             >
-              {msg.text}
+              {splitMessageByUrls(msg.text).map((part, idx) =>
+                part.isLink ? (
+                  <Text
+                    key={`link_${msg.id}_${idx}`}
+                    style={{
+                      textDecorationLine: "underline",
+                      color: isMyMessage ? "#D7EEFF" : colors.primary,
+                    }}
+                    onPress={() => openMessageLink(part.text)}
+                  >
+                    {part.text}
+                  </Text>
+                ) : (
+                  <Text key={`txt_${msg.id}_${idx}`}>{part.text}</Text>
+                )
+              )}
             </Text>
           )}
 
@@ -1286,6 +1425,28 @@ const GroupChatScreen = () => {
           <Text style={styles.headerTitle} numberOfLines={1}>{groupName}</Text>
           <View style={{ width: 40 }} />
         </View>
+        {pinnedMessage ? (
+          <View
+            style={{
+              marginHorizontal: 12,
+              marginTop: 6,
+              marginBottom: 6,
+              borderRadius: 10,
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              backgroundColor: colors.cardBackground,
+              borderWidth: 1,
+              borderColor: colors.border,
+              flexDirection: "row",
+              alignItems: "center",
+            }}
+          >
+            <Ionicons name="pin" size={14} color={colors.primary} style={{ marginRight: 8 }} />
+            <Text style={{ color: colors.textSecondary, flex: 1 }} numberOfLines={1}>
+              {pinnedMessage.text}
+            </Text>
+          </View>
+        ) : null}
         <View style={[globalStyles.centeredContainer, { flex: 1, padding: SPACING.xlarge }]}>
           <View style={{
             backgroundColor: colors.cardBackground,
@@ -1303,7 +1464,7 @@ const GroupChatScreen = () => {
               marginBottom: SPACING.small,
               textAlign: "center",
             }}>
-              Join this group?
+              {isCommunityMember ? "Join this group?" : "Join the community first"}
             </Text>
             <Text style={{
               fontSize: FONT_SIZES.medium,
@@ -1312,8 +1473,11 @@ const GroupChatScreen = () => {
               textAlign: "center",
               lineHeight: 22,
             }}>
-              You’ll see messages and get notifications from this group. Join only if you want to participate.
+              {isCommunityMember
+                ? "You’ll see messages and get notifications from this group. Join only if you want to participate."
+                : "You need to join this community before you can join this group chat. Open the community page, tap Join Community, then come back here."}
             </Text>
+            {isCommunityMember ? (
             <TouchableOpacity
               style={{
                 backgroundColor: colors.primary,
@@ -1334,6 +1498,23 @@ const GroupChatScreen = () => {
                 </Text>
               )}
             </TouchableOpacity>
+            ) : (
+            <TouchableOpacity
+              style={{
+                backgroundColor: colors.primary,
+                paddingVertical: SPACING.medium,
+                paddingHorizontal: SPACING.xlarge,
+                borderRadius: 8,
+                alignSelf: "stretch",
+                alignItems: "center",
+              }}
+              onPress={navigateToCommunityDetail}
+            >
+              <Text style={{ color: colors.buttonText, fontSize: FONT_SIZES.medium, fontWeight: "bold" }}>
+                Go to community
+              </Text>
+            </TouchableOpacity>
+            )}
             <TouchableOpacity
               style={{ marginTop: SPACING.medium }}
               onPress={() => navigation.goBack()}
@@ -1479,25 +1660,6 @@ const GroupChatScreen = () => {
           )}
           <Text style={styles.headerTitle} numberOfLines={1}>{groupName}</Text>
           <View style={{ flexDirection: "row", alignItems: "center" }}>
-            {/* Wallet Icon - only show if group has wallet */}
-            {hasGroupWallet && (
-              <TouchableOpacity
-                onPress={() =>
-                  navigation.navigate("GroupWalletScreen", {
-                    groupId,
-                    groupName,
-                    communityId,
-                  })
-                }
-                style={{ marginRight: SPACING.small }}
-              >
-                <Ionicons
-                  name="wallet-outline"
-                  size={FONT_SIZES.xxlarge}
-                  color={colors.textPrimary}
-                />
-              </TouchableOpacity>
-            )}
             {/* Group Info Button */}
             <TouchableOpacity
               onPress={() =>
@@ -1516,6 +1678,28 @@ const GroupChatScreen = () => {
             </TouchableOpacity>
           </View>
         </View>
+        {pinnedMessage ? (
+          <View
+            style={{
+              marginHorizontal: 12,
+              marginTop: 6,
+              marginBottom: 6,
+              borderRadius: 10,
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              backgroundColor: colors.cardBackground,
+              borderWidth: 1,
+              borderColor: colors.border,
+              flexDirection: "row",
+              alignItems: "center",
+            }}
+          >
+            <Ionicons name="pin" size={14} color={colors.primary} style={{ marginRight: 8 }} />
+            <Text style={{ color: colors.textSecondary, flex: 1 }} numberOfLines={1}>
+              {pinnedMessage.text}
+            </Text>
+          </View>
+        ) : null}
 
         <ScrollView 
           ref={scrollViewRef} 
@@ -1792,6 +1976,19 @@ const GroupChatScreen = () => {
                     <Text style={{ color: colors.text, fontSize: 16 }}>Copy</Text>
                   </TouchableOpacity>
                 )}
+                <TouchableOpacity
+                  style={{
+                    paddingVertical: 16,
+                    paddingHorizontal: 20,
+                    borderBottomWidth: 1,
+                    borderBottomColor: colors.border,
+                  }}
+                  onPress={togglePinSelectedMessage}
+                >
+                  <Text style={{ color: colors.text, fontSize: 16 }}>
+                    {pinnedMessage?.messageId === selectedMessage.id ? "Unpin" : "Pin"}
+                  </Text>
+                </TouchableOpacity>
                 {selectedMessage.senderId === currentUserId && (
                   <TouchableOpacity
                     style={{
@@ -1929,6 +2126,7 @@ const GroupChatScreen = () => {
           </Pressable>
         </Pressable>
       </Modal>
+
     </SafeAreaView>
   );
 };

@@ -16,8 +16,19 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import nodemailer from 'nodemailer';
 import { ethers } from 'ethers';
+import axios from 'axios';
+import { createHash, timingSafeEqual } from 'node:crypto';
 
 import { onDocumentUpdated, onDocumentCreated  } from 'firebase-functions/v2/firestore';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
+
+import {
+  deriveGroupReceiveAddress,
+  isGroupBtcTestnet,
+  fetchAddressBalanceSats,
+  fetchAddressTxs,
+  satsReceivedToAddress,
+} from './groupOnChain.js';
 
 
 // ---------- Crypto Wallet Configuration ----------
@@ -236,6 +247,23 @@ async function fxConvert(amount: number, from: string, to: string): Promise<numb
 
 function walletDoc(uid: string) { return db.collection('wallets').doc(uid); }
 function txCollection(uid: string) { return walletDoc(uid).collection('transactions'); }
+const TX_FEE_RATE = 0.01;
+
+function treasuryWalletUid(): string {
+  const uid = process.env.TREASURY_WALLET_UID?.trim();
+  return uid && uid.length > 0 ? uid : 'treasury_wallet';
+}
+
+function requireTreasuryBtcAddress(): string {
+  const a = process.env.TREASURY_BTC_ADDRESS?.trim();
+  if (!a) {
+    throw new HttpsError(
+      'failed-precondition',
+      'Set TREASURY_BTC_ADDRESS on Functions to collect 1% BTC fees on-chain.'
+    );
+  }
+  return a;
+}
 
 // ---------- Types ----------
 type P2PTransferPayload  = { toUid: string; amount: number; note?: string };
@@ -625,15 +653,22 @@ export const transferFunds = onCall({}, async (request) => {
 
   const amt = Number(amount);
   const now = Timestamp.now();
+  const treasuryUid = treasuryWalletUid();
 
   await db.runTransaction(async (t) => {
     const fromRef = walletDoc(fromUid);
     const toRef = walletDoc(toUid);
+    const treasuryRef = walletDoc(treasuryUid);
     const [fromSnap, toSnap] = await Promise.all([t.get(fromRef), t.get(toRef)]);
 
     // Get currency from sender's wallet (default to USDC)
     const currency = (fromSnap.exists ? (fromSnap.get('currency') || getDefaultCurrency()) : getDefaultCurrency()) as 'USDC' | 'USDT';
     const decimals = TOKEN_DECIMALS[currency];
+    const fee = Number((amt * TX_FEE_RATE).toFixed(decimals));
+    const netToRecipient = Number((amt - fee).toFixed(decimals));
+    if (netToRecipient <= 0) {
+      throw new HttpsError('invalid-argument', 'Amount too small after 1% fee');
+    }
     
     const fromBalStr = fromSnap.exists ? (fromSnap.get('balance') || '0') : '0';
     const fromBal = Number(fromBalStr);
@@ -651,7 +686,7 @@ export const transferFunds = onCall({}, async (request) => {
 
     const toBalStr = toSnap.exists ? (toSnap.get('balance') || '0') : '0';
     const toBal = Number(toBalStr);
-    const newToBalance = (toBal + amt).toFixed(decimals);
+    const newToBalance = (toBal + netToRecipient).toFixed(decimals);
     
     t.set(toRef, {
       uid: toUid,
@@ -661,13 +696,27 @@ export const transferFunds = onCall({}, async (request) => {
       createdAt: toSnap.exists ? (toSnap.get('createdAt') || now) : now,
     }, { merge: true });
 
+    const treasurySnap = await t.get(treasuryRef);
+    const treasuryBalStr = treasurySnap.exists ? (treasurySnap.get('balance') || '0') : '0';
+    const treasuryBal = Number(treasuryBalStr);
+    const newTreasuryBalance = (treasuryBal + fee).toFixed(decimals);
+    t.set(treasuryRef, {
+      uid: treasuryUid,
+      balance: newTreasuryBalance,
+      currency,
+      updatedAt: now,
+      createdAt: treasurySnap.exists ? (treasurySnap.get('createdAt') || now) : now,
+    }, { merge: true });
+
     const debitId = db.collection('_ids').doc().id;
     const creditId = db.collection('_ids').doc().id;
+    const feeId = db.collection('_ids').doc().id;
 
     t.set(txCollection(fromUid).doc(debitId), {
       type: 'TRANSFER_OUT',
       counterparty: toUid,
       amount: amt,
+      fee,
       currency,
       note: note || null,
       createdAt: now,
@@ -677,9 +726,19 @@ export const transferFunds = onCall({}, async (request) => {
     t.set(txCollection(toUid).doc(creditId), {
       type: 'TRANSFER_IN',
       counterparty: fromUid,
-      amount: amt,
+      amount: netToRecipient,
       currency,
       note: note || null,
+      createdAt: now,
+      status: 'SUCCESS',
+    });
+
+    t.set(txCollection(treasuryUid).doc(feeId), {
+      type: 'FEE_IN',
+      sourceType: 'TRANSFER',
+      sourceUserId: fromUid,
+      amount: fee,
+      currency,
       createdAt: now,
       status: 'SUCCESS',
     });
@@ -1708,116 +1767,812 @@ export const notifyOnNewGroupMessage = onDocumentCreated(
 );
 
  // -----------------------------------------------------
-  // Group wallet functions
+  // Group wallet — on-chain Bitcoin (one address per group, HD from server secret)
   // -----------------------------------------------------
-  
 
+const GROUP_BTC_INDEX_DOC = '_config';
+const GROUP_BTC_INDEX_ID = 'groupBtcDerivation';
 
-// ---------- Group Wallet Deposit ----------
-export const depositToGroupWallet = onCall(
-  {},
-  async (request) => {
-    const uid = uidOrThrow(request);
-    const { groupId, amount, method } = request.data as {
-      groupId: string;
-      amount: number;
-      method: "wallet";
-    };
+function walletPinPepper(): string {
+  const p = process.env.GROUP_WALLET_ACCESS_PEPPER?.trim();
+  if (p) return p;
+  return getGroupWalletMnemonicForProvisioning();
+}
 
-    // ✅ Validate inputs
-    if (!groupId || typeof groupId !== "string") {
-      throw new HttpsError("invalid-argument", "Missing groupId");
-    }
-    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
-      throw new HttpsError("invalid-argument", "Invalid deposit amount");
-    }
-    if (method !== "wallet") {
-      throw new HttpsError("invalid-argument", "Only wallet method is supported");
-    }
+function hashWalletPin(groupId: string, pin: string): string {
+  const pepper = walletPinPepper();
+  return createHash('sha256')
+    .update(`${groupId}\x00${pin}\x00${pepper}`, 'utf8')
+    .digest('hex');
+}
 
-    const numericAmount = Number(amount);
-    const now = Timestamp.now();
-    const groupWalletRef = db.collection("groupWallets").doc(groupId);
-    const userRef = db.collection("users").doc(uid);
-
-    // ✅ Wallet Deposit (transfer from user's wallet to group wallet)
-    if (method === "wallet") {
-      await db.runTransaction(async (t) => {
-        const userWalletRef = walletDoc(uid);
-        const [userWalletSnap, groupWalletSnap, userSnap] = await Promise.all([
-          t.get(userWalletRef),
-          t.get(groupWalletRef),
-          t.get(userRef),
-        ]);
-
-        const userData = userSnap.exists ? userSnap.data() : {};
-        const username =
-          userData?.username || userData?.displayName || "Unknown User";
-
-        if (!userWalletSnap.exists) {
-          throw new HttpsError("failed-precondition", "User wallet not found");
-        }
-
-        const currency = (userWalletSnap.get('currency') || getDefaultCurrency()) as 'USDC' | 'USDT';
-        const decimals = TOKEN_DECIMALS[currency];
-        
-        const userBalanceStr = userWalletSnap.get("balance") || "0";
-        const userBalance = Number(userBalanceStr);
-        if (userBalance < numericAmount) {
-          throw new HttpsError("failed-precondition", "Insufficient balance");
-        }
-
-        const groupBalanceStr = groupWalletSnap.exists
-          ? (groupWalletSnap.get("balance") || "0")
-          : "0";
-        const groupBalance = Number(groupBalanceStr);
-
-        // 🔁 Update both wallets
-        const newUserBalance = (userBalance - numericAmount).toFixed(decimals);
-        t.set(
-          userWalletRef,
-          {
-            uid,
-            balance: newUserBalance,
-            updatedAt: now,
-            currency,
-          },
-          { merge: true }
-        );
-
-        const newGroupBalance = (groupBalance + numericAmount).toFixed(decimals);
-        t.set(
-          groupWalletRef,
-          {
-            balance: newGroupBalance,
-            updatedAt: now,
-            createdBy: groupWalletSnap.get("createdBy") || uid,
-            createdAt: groupWalletSnap.get("createdAt") || now,
-            currency,
-          },
-          { merge: true }
-        );
-
-        // 🧾 Log group transaction
-        const txRef = groupWalletRef.collection("transactions").doc();
-        t.set(txRef, {
-          userId: uid,
-          username,
-          type: "DEPOSIT",
-          amount: numericAmount,
-          method: "wallet",
-          createdAt: now,
-          currency,
-          status: "SUCCESS",
-        });
-      });
-
-      return { ok: true, method: "wallet" };
-    }
-
-    throw new HttpsError("invalid-argument", "Unsupported method");
+function getGroupWalletMnemonicForProvisioning(): string {
+  const m = process.env.GROUP_WALLET_MNEMONIC?.trim();
+  if (!m) {
+    throw new HttpsError(
+      'failed-precondition',
+      'Server is not configured for group on-chain wallets. Set GROUP_WALLET_MNEMONIC (BIP39 phrase) on the Functions environment.'
+    );
   }
-);
+  return m;
+}
+
+/** Group creator provisions a unique P2WPKH address; members fund it with real on-chain sends. */
+export const provisionGroupOnChainWallet = onCall({}, async (request) => {
+  const uid = uidOrThrow(request);
+  const { groupId, communityId } = request.data as {
+    groupId?: string;
+    communityId?: string;
+  };
+
+  if (!groupId || typeof groupId !== 'string') {
+    throw new HttpsError('invalid-argument', 'groupId is required');
+  }
+  if (!communityId || typeof communityId !== 'string') {
+    throw new HttpsError('invalid-argument', 'communityId is required');
+  }
+
+  const groupChatRef = db
+    .collection('communities')
+    .doc(communityId)
+    .collection('groupChats')
+    .doc(groupId);
+  const groupChatSnap = await groupChatRef.get();
+  if (!groupChatSnap.exists) {
+    throw new HttpsError('not-found', 'Group chat not found');
+  }
+  if (groupChatSnap.get('createdBy') !== uid) {
+    throw new HttpsError('permission-denied', 'Only the group creator can enable the on-chain wallet');
+  }
+
+  const testnet = isGroupBtcTestnet();
+  const mnemonic = getGroupWalletMnemonicForProvisioning();
+  const groupWalletRef = db.collection('groupWallets').doc(groupId);
+  const existing = await groupWalletRef.get();
+  const alreadyHasAddress = !!(existing.exists && existing.get('onchainAddress'));
+  if (alreadyHasAddress) {
+    const addr = String(existing.get('onchainAddress'));
+    const derivationIndex = Number(existing.get('derivationIndex') ?? 0);
+    const now = Timestamp.now();
+    // Disable/clear any legacy passcode fields.
+    await groupWalletRef.set(
+      {
+        walletPinRequired: false,
+        walletPinHash: FieldValue.delete(),
+        updatedAt: now,
+      },
+      { merge: true }
+    );
+    // Ensure the group chat indicates wallet is enabled.
+    await groupChatRef.set({ hasGroupWallet: true }, { merge: true });
+
+    return { ok: true, onchainAddress: addr, derivationIndex, alreadyProvisioned: true };
+  }
+
+  const cfgRef = db.collection(GROUP_BTC_INDEX_DOC).doc(GROUP_BTC_INDEX_ID);
+  const now = Timestamp.now();
+  let derivationIndex = 0;
+  let address = '';
+
+  await db.runTransaction(async (t) => {
+    const [cfgSnap, walletSnap, groupInTx] = await Promise.all([
+      t.get(cfgRef),
+      t.get(groupWalletRef),
+      t.get(groupChatRef),
+    ]);
+
+    if (!groupInTx.exists || groupInTx.get('createdBy') !== uid) {
+      throw new HttpsError('permission-denied', 'Only the group creator can enable the on-chain wallet');
+    }
+
+    if (walletSnap.exists && walletSnap.get('onchainAddress')) {
+      address = String(walletSnap.get('onchainAddress'));
+      derivationIndex = Number(walletSnap.get('derivationIndex') ?? 0);
+      return;
+    }
+
+    derivationIndex = cfgSnap.exists ? Number(cfgSnap.get('nextIndex') ?? 0) : 0;
+    address = deriveGroupReceiveAddress(mnemonic, derivationIndex, testnet);
+
+    t.set(
+      cfgRef,
+      { nextIndex: derivationIndex + 1, updatedAt: now },
+      { merge: true }
+    );
+
+    t.set(
+      groupWalletRef,
+      {
+        onchainAddress: address,
+        derivationIndex,
+        communityId,
+        createdBy: uid,
+        createdAt: walletSnap.exists ? walletSnap.get('createdAt') || now : now,
+        updatedAt: now,
+        currency: 'BTC',
+        chain: testnet ? 'testnet' : 'mainnet',
+        balance: 0,
+        balanceSource: 'mempool.space',
+        walletPinHash: FieldValue.delete(),
+        walletPinRequired: false,
+        visibility: walletSnap.exists
+          ? walletSnap.get('visibility')
+          : {
+              showBalance: true,
+              showAnalytics: true,
+              showTransactions: true,
+            },
+      },
+      { merge: true }
+    );
+
+    t.update(groupChatRef, { hasGroupWallet: true });
+  });
+
+  return { ok: true, onchainAddress: address, derivationIndex, alreadyProvisioned: false };
+});
+
+/** Members enter the passcode set at group creation before opening the group wallet UI. */
+export const verifyGroupWalletAccessPin = onCall({}, async (request) => {
+  const uid = uidOrThrow(request);
+  const { groupId, pin } = request.data as { groupId?: string; pin?: string };
+
+  if (!groupId || typeof groupId !== 'string') {
+    throw new HttpsError('invalid-argument', 'groupId is required');
+  }
+  if (typeof pin !== 'string') {
+    throw new HttpsError('invalid-argument', 'pin is required');
+  }
+
+  const walletRef = db.collection('groupWallets').doc(groupId);
+  const walletSnap = await walletRef.get();
+  if (!walletSnap.exists) {
+    throw new HttpsError('not-found', 'Group wallet not found');
+  }
+
+  const stored = walletSnap.get('walletPinHash');
+  if (!stored || typeof stored !== 'string') {
+    return { ok: true, legacyNoPin: true };
+  }
+
+  const communityId = walletSnap.get('communityId');
+  if (typeof communityId === 'string' && communityId.length > 0) {
+    const groupChatSnap = await db
+      .collection('communities')
+      .doc(communityId)
+      .collection('groupChats')
+      .doc(groupId)
+      .get();
+    const members: unknown = groupChatSnap.exists ? groupChatSnap.get('members') : [];
+    if (Array.isArray(members) && !members.includes(uid)) {
+      throw new HttpsError('permission-denied', 'You are not a member of this group');
+    }
+  }
+
+  const expectedHex = String(stored).trim().toLowerCase();
+  const gotHex = hashWalletPin(groupId, pin).toLowerCase();
+  let a: Buffer;
+  let b: Buffer;
+  try {
+    a = Buffer.from(expectedHex, 'hex');
+    b = Buffer.from(gotHex, 'hex');
+  } catch {
+    throw new HttpsError('failed-precondition', 'Invalid wallet configuration');
+  }
+  if (a.length !== b.length || a.length === 0) {
+    throw new HttpsError('failed-precondition', 'Invalid wallet configuration');
+  }
+  if (!timingSafeEqual(a, b)) {
+    throw new HttpsError('permission-denied', 'Incorrect passcode');
+  }
+
+  return { ok: true };
+});
+
+/** Pull confirmed + mempool balance and recent txs from mempool.space into Firestore. */
+export const syncGroupOnChainWallet = onCall({}, async (request) => {
+  const uid = uidOrThrow(request);
+  const { groupId } = request.data as { groupId?: string };
+  if (!groupId || typeof groupId !== 'string') {
+    throw new HttpsError('invalid-argument', 'groupId is required');
+  }
+
+  const walletRef = db.collection('groupWallets').doc(groupId);
+  const walletSnap = await walletRef.get();
+  if (!walletSnap.exists) {
+    throw new HttpsError('not-found', 'Group wallet not found');
+  }
+
+  const address = walletSnap.get('onchainAddress');
+  if (!address || typeof address !== 'string') {
+    throw new HttpsError('failed-precondition', 'This group wallet has no on-chain address yet');
+  }
+
+  const communityId = walletSnap.get('communityId');
+  if (typeof communityId === 'string' && communityId.length > 0) {
+    const groupChatSnap = await db
+      .collection('communities')
+      .doc(communityId)
+      .collection('groupChats')
+      .doc(groupId)
+      .get();
+    const members: unknown = groupChatSnap.exists ? groupChatSnap.get('members') : [];
+    if (Array.isArray(members) && !members.includes(uid)) {
+      throw new HttpsError('permission-denied', 'You are not a member of this group');
+    }
+  }
+
+  const testnet = walletSnap.get('chain') === 'testnet' || isGroupBtcTestnet();
+  const balanceSats = await fetchAddressBalanceSats(address, testnet);
+  const txs = await fetchAddressTxs(address, testnet);
+
+  const now = Timestamp.now();
+  await walletRef.set(
+    {
+      balance: balanceSats,
+      lastSyncedAt: now,
+      updatedAt: now,
+    },
+    { merge: true }
+  );
+
+  const batch = db.bulkWriter();
+  for (const tx of txs) {
+    const received = satsReceivedToAddress(tx, address);
+    if (received <= 0) continue;
+    const txid = tx.txid;
+    if (!txid) continue;
+    const st = tx.status;
+    const blockTimeSec = st?.block_time;
+    const createdAt =
+      typeof blockTimeSec === 'number' && blockTimeSec > 0
+        ? Timestamp.fromMillis(blockTimeSec * 1000)
+        : now;
+    const txRef = walletRef.collection('transactions').doc(txid);
+    batch.set(
+      txRef,
+      {
+        type: 'ON_CHAIN_IN',
+        txid,
+        amount: received,
+        confirmed: !!st?.confirmed,
+        blockHeight: st?.block_height ?? null,
+        userId: 'on_chain',
+        username: 'On-chain',
+        createdAt,
+        currency: 'BTC',
+        status: st?.confirmed ? 'CONFIRMED' : 'MEMPOOL',
+      },
+      { merge: true }
+    );
+  }
+  await batch.close();
+
+  return { ok: true, balanceSats, txCount: txs.length };
+});
+
+/** Pull personal on-chain BTC receive activity and store ON_CHAIN_IN rows for the current user. */
+export const syncPersonalOnChainWallet = onCall({}, async (request) => {
+  const uid = uidOrThrow(request);
+  const { onchainAddress } = (request.data || {}) as { onchainAddress?: string };
+
+  const userRef = db.collection('users').doc(uid);
+  const userSnap = await userRef.get();
+  const storedAddress = userSnap.exists ? userSnap.get('onchainAddress') : null;
+  const addressRaw =
+    typeof storedAddress === 'string' && storedAddress.trim()
+      ? storedAddress
+      : typeof onchainAddress === 'string'
+      ? onchainAddress
+      : '';
+  const address = addressRaw.trim();
+  if (!address) {
+    throw new HttpsError('failed-precondition', 'No on-chain address configured for this wallet');
+  }
+
+  const lower = address.toLowerCase();
+  const looksTestnet = lower.startsWith('tb1');
+  const testnet = looksTestnet || isGroupBtcTestnet();
+  const balanceSats = await fetchAddressBalanceSats(address, testnet);
+  const txs = await fetchAddressTxs(address, testnet);
+
+  const now = Timestamp.now();
+  const batch = db.bulkWriter();
+  let inserted = 0;
+  for (const tx of txs) {
+    const received = satsReceivedToAddress(tx, address);
+    if (received <= 0) continue;
+    const txid = tx.txid;
+    if (!txid) continue;
+    const st = tx.status;
+    const blockTimeSec = st?.block_time;
+    const createdAt =
+      typeof blockTimeSec === 'number' && blockTimeSec > 0
+        ? Timestamp.fromMillis(blockTimeSec * 1000)
+        : now;
+    const txRef = txCollection(uid).doc(`onchain_in_${txid}`);
+    batch.set(
+      txRef,
+      {
+        type: 'ON_CHAIN_IN',
+        txid,
+        amount: received,
+        currency: 'BTC',
+        status: st?.confirmed ? 'CONFIRMED' : 'MEMPOOL',
+        confirmed: !!st?.confirmed,
+        blockHeight: st?.block_height ?? null,
+        counterparty: 'on_chain',
+        counterpartyName: 'On-chain',
+        createdAt,
+        updatedAt: now,
+      },
+      { merge: true }
+    );
+    inserted += 1;
+  }
+  await batch.close();
+
+  await userRef.set({ onchainAddress: address, updatedAt: now }, { merge: true });
+
+  return { ok: true, address, balanceSats, txCount: txs.length, inserted };
+});
+
+function squareApiBaseUrl(): string {
+  const raw =
+    process.env.SQUARE_API_URL?.trim() ||
+    process.env.EXPO_PUBLIC_SQUARE_API_URL?.trim();
+  if (!raw) {
+    throw new HttpsError(
+      'failed-precondition',
+      'Set SQUARE_API_URL on Functions to your Square Lightning backend base URL (same host the app uses).'
+    );
+  }
+  return raw.replace(/\/$/, '');
+}
+
+function requireInternalApiSecret(): string {
+  const s = process.env.INTERNAL_API_SECRET?.trim();
+  if (!s) {
+    throw new HttpsError(
+      'failed-precondition',
+      'Set INTERNAL_API_SECRET on Functions (must match the backend INTERNAL_API_SECRET).'
+    );
+  }
+  return s;
+}
+
+const MIN_GROUP_DEPOSIT_SATS = 1000;
+/** Room for LND mining fee debited from the same wallet balance the app displays. */
+const ONCHAIN_FEE_HEADROOM_SATS = 15_000;
+
+/**
+ * Spend from the Square LND wallet (the balance shown in the personal wallet) on-chain
+ * to the group's receive address. Requires backend /internal/send-onchain + INTERNAL_API_SECRET.
+ */
+export const depositToGroupFromWallet = onCall({}, async (request) => {
+  const uid = uidOrThrow(request);
+  const { groupId, amountSats, senderPubKey } = request.data as {
+    groupId?: string;
+    amountSats?: unknown;
+    senderPubKey?: string;
+  };
+
+  if (!groupId || typeof groupId !== 'string') {
+    throw new HttpsError('invalid-argument', 'groupId is required');
+  }
+  if (!senderPubKey || typeof senderPubKey !== 'string' || !senderPubKey.trim()) {
+    throw new HttpsError('invalid-argument', 'senderPubKey is required');
+  }
+
+  const amt = Math.floor(Number(amountSats));
+  if (!Number.isFinite(amt) || amt < MIN_GROUP_DEPOSIT_SATS) {
+    throw new HttpsError(
+      'invalid-argument',
+      `amountSats must be at least ${MIN_GROUP_DEPOSIT_SATS}`
+    );
+  }
+  const feeSats = Math.max(1, Math.floor(amt * TX_FEE_RATE));
+  const totalDebitSats = amt + feeSats;
+
+  const walletRef = db.collection('groupWallets').doc(groupId);
+  const walletSnap = await walletRef.get();
+  if (!walletSnap.exists) {
+    throw new HttpsError('not-found', 'Group wallet not found');
+  }
+
+  const address = walletSnap.get('onchainAddress');
+  if (!address || typeof address !== 'string') {
+    throw new HttpsError('failed-precondition', 'Group has no on-chain address');
+  }
+
+  const communityId = walletSnap.get('communityId');
+  if (typeof communityId === 'string' && communityId.length > 0) {
+    const groupChatSnap = await db
+      .collection('communities')
+      .doc(communityId)
+      .collection('groupChats')
+      .doc(groupId)
+      .get();
+    const members: unknown = groupChatSnap.exists ? groupChatSnap.get('members') : [];
+    if (Array.isArray(members) && !members.includes(uid)) {
+      throw new HttpsError('permission-denied', 'You are not a member of this group');
+    }
+  }
+
+  const base = squareApiBaseUrl();
+  const secret = requireInternalApiSecret();
+
+  try {
+    const balRes = await axios.get(`${base}/get-balance`, {
+      params: { pubKey: senderPubKey.trim() },
+      timeout: 20000,
+    });
+    const nodeBal = Number(balRes.data?.balance ?? 0);
+    if (!Number.isFinite(nodeBal)) {
+      throw new HttpsError('unavailable', 'Could not read wallet balance');
+    }
+    if (nodeBal < totalDebitSats + ONCHAIN_FEE_HEADROOM_SATS) {
+      throw new HttpsError(
+        'failed-precondition',
+        `Not enough balance. Leave about ${ONCHAIN_FEE_HEADROOM_SATS.toLocaleString()} sats extra for mining fees (you need ~${(totalDebitSats + ONCHAIN_FEE_HEADROOM_SATS).toLocaleString()} sats total).`
+      );
+    }
+  } catch (e) {
+    if (e instanceof HttpsError) throw e;
+    logger.warn('depositToGroupFromWallet: balance check failed', e);
+    throw new HttpsError('unavailable', 'Could not verify wallet balance. Try again later.');
+  }
+
+  let txid: string;
+  try {
+    const { data } = await axios.post<{
+      ok?: boolean;
+      txid?: string;
+      message?: string;
+    }>(
+      `${base}/internal/send-onchain`,
+      {
+        address: address.trim(),
+        amountSats: amt,
+        label: `group:${groupId}:uid:${uid}`,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': secret,
+        },
+        timeout: 120000,
+      }
+    );
+    if (!data?.ok || !data?.txid) {
+      throw new Error(data?.message || 'No txid from backend');
+    }
+    txid = String(data.txid);
+  } catch (e: any) {
+    const msg =
+      e?.response?.data?.message || e?.message || String(e);
+    logger.error('depositToGroupFromWallet send failed', msg);
+    throw new HttpsError('internal', String(msg));
+  }
+
+  const treasuryAddress = requireTreasuryBtcAddress();
+  try {
+    const { data } = await axios.post<{
+      ok?: boolean;
+      txid?: string;
+      message?: string;
+    }>(
+      `${base}/internal/send-onchain`,
+      {
+        address: treasuryAddress,
+        amountSats: feeSats,
+        label: `fee:group_deposit:${groupId}:src:${txid}`,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': secret,
+        },
+        timeout: 120000,
+      }
+    );
+    if (!data?.ok || !data?.txid) {
+      throw new Error(data?.message || 'No fee txid from backend');
+    }
+  } catch (e: any) {
+    const msg = e?.response?.data?.message || e?.message || String(e);
+    logger.error('depositToGroupFromWallet fee send failed', msg);
+    throw new HttpsError('internal', `Treasury fee send failed: ${String(msg)}`);
+  }
+
+  return { ok: true, txid, feeSats };
+});
+
+/** Group creator: send from app node wallet to any on-chain address, tracked as group withdrawal. */
+export const sendFromGroupWallet = onCall({}, async (request) => {
+  const uid = uidOrThrow(request);
+  const { groupId, address, amountSats } = request.data as {
+    groupId?: string;
+    address?: string;
+    amountSats?: unknown;
+  };
+
+  if (!groupId || typeof groupId !== 'string') {
+    throw new HttpsError('invalid-argument', 'groupId is required');
+  }
+  if (!address || typeof address !== 'string' || !address.trim()) {
+    throw new HttpsError('invalid-argument', 'address is required');
+  }
+
+  const amt = Math.floor(Number(amountSats));
+  if (!Number.isFinite(amt) || amt < MIN_GROUP_DEPOSIT_SATS) {
+    throw new HttpsError(
+      'invalid-argument',
+      `amountSats must be at least ${MIN_GROUP_DEPOSIT_SATS}`
+    );
+  }
+  const feeSats = Math.max(1, Math.floor(amt * TX_FEE_RATE));
+  const totalDebitSats = amt + feeSats;
+
+  const walletRef = db.collection('groupWallets').doc(groupId);
+  const walletSnap = await walletRef.get();
+  if (!walletSnap.exists) {
+    throw new HttpsError('not-found', 'Group wallet not found');
+  }
+  if (walletSnap.get('createdBy') !== uid) {
+    throw new HttpsError('permission-denied', 'Only the group creator can send from this wallet');
+  }
+
+  const groupBal = Number(walletSnap.get('balance') ?? 0);
+  if (Number.isFinite(groupBal) && groupBal > 0 && groupBal < totalDebitSats) {
+    throw new HttpsError('failed-precondition', 'Not enough group wallet balance');
+  }
+
+  const base = squareApiBaseUrl();
+  const secret = requireInternalApiSecret();
+
+  let txid: string;
+  try {
+    const { data } = await axios.post<{
+      ok?: boolean;
+      txid?: string;
+      message?: string;
+    }>(
+      `${base}/internal/send-onchain`,
+      {
+        address: address.trim(),
+        amountSats: amt,
+        label: `group-withdraw:${groupId}:uid:${uid}`,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': secret,
+        },
+        timeout: 120000,
+      }
+    );
+    if (!data?.ok || !data?.txid) {
+      throw new Error(data?.message || 'No txid from backend');
+    }
+    txid = String(data.txid);
+  } catch (e: any) {
+    const msg = e?.response?.data?.message || e?.message || String(e);
+    logger.error('sendFromGroupWallet failed', msg);
+    throw new HttpsError('internal', String(msg));
+  }
+
+  const now = Timestamp.now();
+  await walletRef.collection('transactions').doc(`withdraw_${txid}`).set(
+    {
+      type: 'WITHDRAWAL',
+      txid,
+      amount: amt,
+      userId: uid,
+      username: 'Group Admin',
+      createdAt: now,
+      currency: 'BTC',
+      status: 'MEMPOOL',
+    },
+    { merge: true }
+  );
+  await walletRef.collection('transactions').doc(`fee_${txid}`).set(
+    {
+      type: 'FEE',
+      txid,
+      amount: feeSats,
+      userId: uid,
+      username: 'Treasury fee',
+      createdAt: now,
+      currency: 'BTC',
+      status: 'SUCCESS',
+    },
+    { merge: true }
+  );
+
+  const treasuryAddress = requireTreasuryBtcAddress();
+  try {
+    const { data } = await axios.post<{
+      ok?: boolean;
+      txid?: string;
+      message?: string;
+    }>(
+      `${base}/internal/send-onchain`,
+      {
+        address: treasuryAddress,
+        amountSats: feeSats,
+        label: `fee:group_send:${groupId}:src:${txid}`,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': secret,
+        },
+        timeout: 120000,
+      }
+    );
+    if (!data?.ok || !data?.txid) {
+      throw new Error(data?.message || 'No fee txid from backend');
+    }
+  } catch (e: any) {
+    const msg = e?.response?.data?.message || e?.message || String(e);
+    logger.error('sendFromGroupWallet fee send failed', msg);
+    throw new HttpsError('internal', `Treasury fee send failed: ${String(msg)}`);
+  }
+
+  return { ok: true, txid, feeSats };
+});
+
+/** Personal wallet: send from app node wallet to any on-chain BTC address. */
+export const sendFromWalletOnChain = onCall({}, async (request) => {
+  const uid = uidOrThrow(request);
+  const { address, amountSats, senderPubKey } = request.data as {
+    address?: string;
+    amountSats?: unknown;
+    senderPubKey?: string;
+  };
+
+  if (!address || typeof address !== 'string' || !address.trim()) {
+    throw new HttpsError('invalid-argument', 'address is required');
+  }
+  if (!senderPubKey || typeof senderPubKey !== 'string' || !senderPubKey.trim()) {
+    throw new HttpsError('invalid-argument', 'senderPubKey is required');
+  }
+
+  const amt = Math.floor(Number(amountSats));
+  if (!Number.isFinite(amt) || amt < MIN_GROUP_DEPOSIT_SATS) {
+    throw new HttpsError(
+      'invalid-argument',
+      `amountSats must be at least ${MIN_GROUP_DEPOSIT_SATS}`
+    );
+  }
+  const feeSats = Math.max(1, Math.floor(amt * TX_FEE_RATE));
+  const totalDebitSats = amt + feeSats;
+
+  const base = squareApiBaseUrl();
+  const secret = requireInternalApiSecret();
+
+  try {
+    const balRes = await axios.get(`${base}/get-balance`, {
+      params: { pubKey: senderPubKey.trim() },
+      timeout: 20000,
+    });
+    const nodeBal = Number(balRes.data?.balance ?? 0);
+    if (!Number.isFinite(nodeBal)) {
+      throw new HttpsError('unavailable', 'Could not read wallet balance');
+    }
+    if (nodeBal < totalDebitSats + ONCHAIN_FEE_HEADROOM_SATS) {
+      throw new HttpsError(
+        'failed-precondition',
+        `Not enough spendable node balance. This send uses your Lightning node on-chain balance only (not funds sitting on your app receive address). Node has ${nodeBal.toLocaleString()} sats; need ~${(totalDebitSats + ONCHAIN_FEE_HEADROOM_SATS).toLocaleString()} sats including fee headroom.`
+      );
+    }
+  } catch (e) {
+    if (e instanceof HttpsError) throw e;
+    const ax = e as any;
+    const status = ax?.response?.status;
+    const bodyMsg = ax?.response?.data?.message || ax?.response?.data?.error;
+    const code = ax?.code;
+    const detail =
+      bodyMsg ||
+      (code === 'ECONNREFUSED'
+        ? `Cannot reach Square backend at ${base} (connection refused).`
+        : ax?.message || String(e));
+    logger.warn('sendFromWalletOnChain: balance check failed', { detail, status, code });
+    throw new HttpsError(
+      'unavailable',
+      `Balance check failed${status ? ` (${status})` : ''}: ${detail}`
+    );
+  }
+
+  let txid: string;
+  try {
+    const { data } = await axios.post<{
+      ok?: boolean;
+      txid?: string;
+      message?: string;
+    }>(
+      `${base}/internal/send-onchain`,
+      {
+        address: address.trim(),
+        amountSats: amt,
+        label: `personal-withdraw:uid:${uid}`,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': secret,
+        },
+        timeout: 120000,
+      }
+    );
+    if (!data?.ok || !data?.txid) {
+      throw new Error(data?.message || 'No txid from backend');
+    }
+    txid = String(data.txid);
+  } catch (e: any) {
+    const msg = e?.response?.data?.message || e?.message || String(e);
+    logger.error('sendFromWalletOnChain failed', msg);
+    throw new HttpsError('internal', String(msg));
+  }
+
+  const treasuryAddress = requireTreasuryBtcAddress();
+  try {
+    const { data } = await axios.post<{
+      ok?: boolean;
+      txid?: string;
+      message?: string;
+    }>(
+      `${base}/internal/send-onchain`,
+      {
+        address: treasuryAddress,
+        amountSats: feeSats,
+        label: `fee:personal_send:uid:${uid}:src:${txid}`,
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': secret,
+        },
+        timeout: 120000,
+      }
+    );
+    if (!data?.ok || !data?.txid) {
+      throw new Error(data?.message || 'No fee txid from backend');
+    }
+  } catch (e: any) {
+    const msg = e?.response?.data?.message || e?.message || String(e);
+    logger.error('sendFromWalletOnChain fee send failed', msg);
+    throw new HttpsError('internal', `Treasury fee send failed: ${String(msg)}`);
+  }
+
+  const now = Timestamp.now();
+  const outId = db.collection('_ids').doc().id;
+  const feeId = db.collection('_ids').doc().id;
+  await Promise.all([
+    txCollection(uid).doc(outId).set({
+      type: 'ON_CHAIN_OUT',
+      amount: amt,
+      fee: feeSats,
+      currency: 'BTC',
+      createdAt: now,
+      status: 'MEMPOOL',
+      txid,
+      address: address.trim(),
+    }),
+    txCollection(uid).doc(feeId).set({
+      type: 'FEE',
+      amount: feeSats,
+      currency: 'BTC',
+      createdAt: now,
+      status: 'SUCCESS',
+      sourceType: 'ON_CHAIN_OUT',
+      sourceTxid: txid,
+    }),
+  ]);
+
+  return { ok: true, txid, feeSats };
+});
 
 // ---------- Password Reset Function ----------
 /**
@@ -1981,6 +2736,210 @@ This is an automated message from Square. Please do not reply to this email.`,
       throw new HttpsError(
         'internal',
         'An error occurred while resetting your password. Please try again later.'
+      );
+    }
+  }
+);
+
+// ---------- KLIPY GIF API proxy (uses Firebase secret KLIPY_SECRET) ----------
+// Set secret: firebase functions:secrets:set KLIPY_SECRET
+interface KlipyApiResponse {
+  data?: { data?: unknown[]; results?: unknown[]; has_next?: boolean };
+  results?: unknown[];
+}
+function parseKlipyItem(item: any): { id: string; url: string; tinyUrl: string; title?: string } {
+  const id = item.id || item.slug || String(Math.random());
+  let url = '';
+  let tinyUrl = '';
+  if (item.media_formats) {
+    const m = item.media_formats;
+    const gif = m.gif || m.mediumgif;
+    const tiny = m.tinygif || m.nanogif || gif;
+    url = gif?.url || tiny?.url || '';
+    tinyUrl = tiny?.url || gif?.url || url;
+  }
+  if (item.files && typeof item.files === 'object') {
+    const f = item.files;
+    url = f.gif?.url || f.medium?.url || f.large?.url || f.small?.url || url;
+    tinyUrl = f.tiny?.url || f.small?.url || f.nano?.url || url || tinyUrl;
+  }
+  if (!url && item.url) url = item.url;
+  if (!tinyUrl) tinyUrl = url;
+  if (!url && item.images?.original?.url) url = item.images.original.url;
+  if (!tinyUrl && item.images?.fixed_height_small?.url) tinyUrl = item.images.fixed_height_small.url;
+  return {
+    id,
+    url,
+    tinyUrl: tinyUrl || url,
+    title: item.content_description || item.title || item.description || '',
+  };
+}
+
+export const getKlipyTrending = onCall(
+  {
+    region: 'us-central1',
+    cors: true,
+    secrets: ['KLIPY_SECRET'],
+  },
+  async (request) => {
+    const key = process.env.KLIPY_SECRET;
+    if (!key) throw new HttpsError('failed-precondition', 'KLIPY_SECRET not set');
+    const limit = Math.min(50, Math.max(8, Number(request.data?.limit) || 24));
+    const page = String(request.data?.page || '1');
+    const params = new URLSearchParams({ per_page: String(limit), page });
+    const res = await fetch(`https://api.klipy.com/api/v1/${key}/gifs/trending?${params}`);
+    if (!res.ok) throw new HttpsError('internal', `KLIPY trending: ${res.status}`);
+    const json = (await res.json()) as KlipyApiResponse;
+    const payload =
+      json?.data?.data ??
+      json?.data?.results ??
+      json?.data ??
+      json?.results ??
+      (Array.isArray(json) ? json : []);
+    const list = Array.isArray(payload) ? payload : [];
+    const gifs = list.map(parseKlipyItem).filter((g: { url: string }) => g.url);
+    const hasNext = json?.data?.has_next === true;
+    const next = hasNext ? String((parseInt(page, 10) || 1) + 1) : null;
+    return { gifs, next };
+  }
+);
+
+export const getKlipySearch = onCall(
+  {
+    region: 'us-central1',
+    cors: true,
+    secrets: ['KLIPY_SECRET'],
+  },
+  async (request) => {
+    const key = process.env.KLIPY_SECRET;
+    if (!key) throw new HttpsError('failed-precondition', 'KLIPY_SECRET not set');
+    const q = String(request.data?.query || '').trim();
+    const limit = Math.min(50, Math.max(8, Number(request.data?.limit) || 24));
+    const page = String(request.data?.page || '1');
+    const params = new URLSearchParams({ per_page: String(limit), page });
+    const url = q
+      ? `https://api.klipy.com/api/v1/${key}/gifs/search?${params}&q=${encodeURIComponent(q)}`
+      : `https://api.klipy.com/api/v1/${key}/gifs/trending?${params}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new HttpsError('internal', `KLIPY: ${res.status}`);
+    const json = (await res.json()) as KlipyApiResponse;
+    const payload =
+      json?.data?.data ??
+      json?.data?.results ??
+      json?.data ??
+      json?.results ??
+      (Array.isArray(json) ? json : []);
+    const list = Array.isArray(payload) ? payload : [];
+    const gifs = list.map(parseKlipyItem).filter((g: { url: string }) => g.url);
+    const hasNext = json?.data?.has_next === true;
+    const next = hasNext ? String((parseInt(page, 10) || 1) + 1) : null;
+    return { gifs, next };
+  }
+);
+
+/** Radius for map deal notifications (km); keep in sync with MapScreen client filter */
+const MAP_SPECIAL_NOTIFY_RADIUS_KM = 15;
+
+const MAP_SPECIAL_NOTIFY_LEAD_MINUTES = 60;
+const MAP_SPECIAL_NOTIFY_WINDOW_MINUTES = 15;
+
+function parseUtcTimeToMinutes(value: string): number | null {
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+/**
+ * Every 15 minutes (UTC): notify users ~1 hour before each deal time for the selected weekday.
+ */
+export const notifyMapSpecialsDaily = onSchedule(
+  {
+    schedule: '*/15 * * * *',
+    timeZone: 'Etc/UTC',
+    region: 'us-central1',
+    memory: '512MiB',
+  },
+  async () => {
+    const now = new Date();
+    const target = new Date(now.getTime() + MAP_SPECIAL_NOTIFY_LEAD_MINUTES * 60 * 1000);
+    const targetDay = target.getUTCDay();
+    const targetYmd = target.toISOString().slice(0, 10);
+    const targetMinutes = target.getUTCHours() * 60 + target.getUTCMinutes();
+    const windowEnd = targetMinutes + MAP_SPECIAL_NOTIFY_WINDOW_MINUTES;
+
+    const specialsSnap = await db.collection('mapSpecials').where('active', '==', true).get();
+    if (specialsSnap.empty) {
+      logger.info('notifyMapSpecialsDaily: no active specials');
+      return;
+    }
+
+    const usersSnapshot = await db.collection('users').get();
+
+    for (const docSnap of specialsSnap.docs) {
+      const special = docSnap.data();
+      const weekdays: number[] = Array.isArray(special.weekdays) ? special.weekdays : [];
+      if (!weekdays.includes(targetDay)) continue;
+      const timeMinutes = parseUtcTimeToMinutes(String(special.dealTimeUtc || ''));
+      if (timeMinutes == null) continue;
+      if (!(timeMinutes >= targetMinutes && timeMinutes < windowEnd)) continue;
+
+      const occurrenceKey = `${targetYmd}_${String(timeMinutes).padStart(4, '0')}`;
+      if (special.lastNotifiedOccurrenceKey === occurrenceKey) continue;
+
+      const lat = special.latitude;
+      const lng = special.longitude;
+      const createdBy = special.createdBy;
+      const title = String(special.title || 'Nearby deal');
+      const locationLine =
+        special.location != null && String(special.location).trim() !== ''
+          ? String(special.location)
+          : special.placeName
+            ? String(special.placeName)
+            : '';
+
+      if (typeof lat !== 'number' || typeof lng !== 'number' || !createdBy) {
+        await docSnap.ref.update({
+          lastNotifiedOccurrenceKey: occurrenceKey,
+          lastNotifiedAt: FieldValue.serverTimestamp(),
+        });
+        continue;
+      }
+
+      const tokenSet = new Set<string>();
+      for (const userDoc of usersSnapshot.docs) {
+        const userId = userDoc.id;
+        if (userId === createdBy) continue;
+        const userData = userDoc.data();
+        const userLat = userData.latitude;
+        const userLng = userData.longitude;
+        if (userLat == null || userLng == null) continue;
+        const distance = calculateDistance(lat, lng, userLat, userLng);
+        if (distance > MAP_SPECIAL_NOTIFY_RADIUS_KM) continue;
+        const fcmTokens: string[] = (userData.fcmTokens || []).filter(
+          (t: any) => typeof t === 'string' && t.length > 0
+        );
+        const expoTokens: string[] = (userData.expoPushTokens || []).filter(
+          (t: any) => typeof t === 'string' && t.startsWith('ExponentPushToken')
+        );
+        const tokens = fcmTokens.length > 0 ? fcmTokens : expoTokens;
+        for (const t of tokens) tokenSet.add(t);
+      }
+
+      const uniqueTokens = [...tokenSet];
+      if (uniqueTokens.length > 0) {
+        const body = locationLine ? `${title} — ${locationLine}` : title;
+        await sendFCMPush(uniqueTokens, 'Deal reminder (1 hour)', body, {
+          type: 'map_special',
+          specialId: docSnap.id,
+        });
+      }
+
+      await docSnap.ref.update({
+        lastNotifiedOccurrenceKey: occurrenceKey,
+        lastNotifiedAt: FieldValue.serverTimestamp(),
+      });
+      logger.info(
+        `notifyMapSpecialsDaily: special ${docSnap.id} → ${uniqueTokens.length} device token(s)`
       );
     }
   }

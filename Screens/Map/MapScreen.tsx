@@ -149,6 +149,40 @@ interface ActivityMemory {
   longitude: number;
 }
 
+/** Local deal / special pinned on the map; push radius handled in Cloud Functions */
+interface MapSpecial {
+  id: string;
+  title: string;
+  description?: string;
+  placeName?: string | null;
+  /** Resolved address / place label (same idea as activities `location`) */
+  location?: string;
+  imageUrl?: string;
+  dealTimeUtc?: string;
+  latitude: number;
+  longitude: number;
+  createdBy: string;
+  creatorName?: string;
+  weekdays: number[];
+  active?: boolean;
+  distance?: number;
+}
+
+const UTC_WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function formatUtcWeekdays(days: number[]): string {
+  if (!days?.length) return '';
+  return [...days]
+    .sort((a, b) => a - b)
+    .map((d) => UTC_WEEKDAY_LABELS[d] ?? '?')
+    .join(', ');
+}
+
+function formatUtcDealTime(value?: string): string {
+  if (!value || !/^([01]\d|2[0-3]):([0-5]\d)$/.test(value)) return 'Time not set';
+  return `${value} UTC`;
+}
+
 // Haversine formula to calculate distance between two coordinates in km
 const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
   const R = 6371; // Radius of the Earth in km
@@ -167,6 +201,7 @@ export default function MapScreen() {
   const navigation = useNavigation<NavigationProp>();
   const insets = useSafeAreaInsets();
   const fabBottom = TAB_BAR_CONTENT_HEIGHT + insets.bottom + FAB_BOTTOM_SPACING;
+  const modalBottomSafeSpace = Math.max(insets.bottom, Platform.OS === 'android' ? 28 : 0);
   const mapRef = useRef<MapView>(null);
   const auth = getAuth();
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
@@ -183,6 +218,8 @@ export default function MapScreen() {
   const [showCreateActivity, setShowCreateActivity] = useState(false);
   const [selectedActivity, setSelectedActivity] = useState<Activity | null>(null);
   const [showActivitiesList, setShowActivitiesList] = useState(false);
+  const [showMemoryActivityPicker, setShowMemoryActivityPicker] = useState(false);
+  const [activityListTab, setActivityListTab] = useState<'activities' | 'specials'>('activities');
   const [followUser, setFollowUser] = useState(true); // Track if map should auto-follow user
   const [showParticipantsList, setShowParticipantsList] = useState(false);
   const [participantsData, setParticipantsData] = useState<ParticipantData[]>([]);
@@ -198,6 +235,8 @@ export default function MapScreen() {
     { key: 'my-activities', title: 'My activities' },
   ]);
   const [highlightedMemoryLocation, setHighlightedMemoryLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [mapSpecials, setMapSpecials] = useState<MapSpecial[]>([]);
+  const [selectedMapSpecial, setSelectedMapSpecial] = useState<MapSpecial | null>(null);
   const [unreadByActivityId, setUnreadByActivityId] = useState<Record<string, number>>({});
   const [joinRequestsForSelected, setJoinRequestsForSelected] = useState<{ id: string; userId: string; userName: string; userPhoto?: string; requestedAt: any }[]>([]);
   const [hasPendingJoinRequest, setHasPendingJoinRequest] = useState(false);
@@ -242,6 +281,8 @@ export default function MapScreen() {
   /** Activities to show on the map (exclude expired so we don't clutter the map) */
   const activitiesForMap = activities.filter((a) => !isActivityExpired(a));
 
+  const mapSpecialsForMap = mapSpecials.filter((s) => s.active !== false);
+
   // Form states for activity
   const [activityTitle, setActivityTitle] = useState('');
   const [activityDescription, setActivityDescription] = useState('');
@@ -259,7 +300,6 @@ export default function MapScreen() {
   const [locationSuggestions, setLocationSuggestions] = useState<PlaceSuggestion[]>([]);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const [showLocationSuggestions, setShowLocationSuggestions] = useState(false);
-  const [activityFriendsOnly, setActivityFriendsOnly] = useState(false);
   const [activityRequiresApproval, setActivityRequiresApproval] = useState(false);
 
   const GOOGLE_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyDR5JhBnTT53KmUwNQI6QcWG5RjY5sdYRM';
@@ -440,7 +480,6 @@ export default function MapScreen() {
   // Fetch nearby activities within 50km radius
   useEffect(() => {
     if (!userLocation) return;
-
     const centerLat = userLocation.coords.latitude;
     const centerLng = userLocation.coords.longitude;
     // 50km radius ≈ 0.45 degrees (roughly)
@@ -527,6 +566,58 @@ export default function MapScreen() {
       (err) => {
         console.error('Activities snapshot error:', err);
       }
+    );
+
+    return () => unsubscribe();
+  }, [userLocation]);
+
+  // Nearby map deals / specials (15 km) — same latitude band query as activities, then haversine
+  useEffect(() => {
+    if (!userLocation) return;
+
+    const centerLat = userLocation.coords.latitude;
+    const centerLng = userLocation.coords.longitude;
+    const radiusDegrees = 15 / 111;
+
+    const specialsRef = collection(db, 'mapSpecials');
+    const q = query(
+      specialsRef,
+      where('latitude', '>=', centerLat - radiusDegrees),
+      where('latitude', '<=', centerLat + radiusDegrees)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const list: MapSpecial[] = [];
+        for (const docSnap of snapshot.docs) {
+          const data = docSnap.data();
+          if (data.active === false) continue;
+          const lng = data.longitude;
+          const distance = calculateDistance(centerLat, centerLng, data.latitude, lng);
+          if (distance <= 15) {
+            list.push({
+              id: docSnap.id,
+              title: data.title || 'Deal',
+              description: data.description,
+              placeName: data.placeName,
+              location: data.location,
+              imageUrl: data.imageUrl,
+              dealTimeUtc: data.dealTimeUtc,
+              latitude: data.latitude,
+              longitude: lng,
+              createdBy: data.createdBy,
+              creatorName: data.creatorName,
+              weekdays: Array.isArray(data.weekdays) ? data.weekdays : [],
+              active: data.active !== false,
+              distance: Math.round(distance * 10) / 10,
+            });
+          }
+        }
+        list.sort((a, b) => (a.distance || 0) - (b.distance || 0));
+        setMapSpecials(list);
+      },
+      (err) => console.error('Map specials snapshot error:', err)
     );
 
     return () => unsubscribe();
@@ -863,20 +954,6 @@ export default function MapScreen() {
         );
       }
 
-      let allowedViewers: string[] | undefined;
-      const visibility = activityFriendsOnly ? 'friends_only' : 'everyone';
-      if (activityFriendsOnly) {
-        const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-        const friendsData = userDoc.exists() ? userDoc.data()?.friends : null;
-        const friendIds: string[] = [];
-        if (Array.isArray(friendsData)) {
-          friendIds.push(...friendsData);
-        } else if (friendsData && typeof friendsData === 'object') {
-          friendIds.push(...Object.keys(friendsData).filter((uid) => friendsData[uid] === true));
-        }
-        allowedViewers = [auth.currentUser.uid, ...friendIds];
-      }
-
       const activityRef = await addDoc(collection(db, 'activities'), {
         title: activityTitle.trim(),
         activityType: activityType,
@@ -889,9 +966,8 @@ export default function MapScreen() {
         participants: [auth.currentUser.uid],
         startTime: Timestamp.fromDate(combinedStartDateTime),
         endTime: Timestamp.fromDate(combinedEndDateTime),
-        visibility,
+        visibility: 'everyone',
         requiresApproval: activityRequiresApproval,
-        ...(allowedViewers && { allowedViewers }),
       });
       await setDoc(doc(db, 'activityChats', activityRef.id), {
         activityId: activityRef.id,
@@ -918,7 +994,6 @@ export default function MapScreen() {
       setSelectedPlaceId(null);
       setLocationSuggestions([]);
       setShowLocationSuggestions(false);
-      setActivityFriendsOnly(false);
       setActivityRequiresApproval(false);
     } catch (error: any) {
       console.error('Error creating activity:', error);
@@ -984,24 +1059,39 @@ export default function MapScreen() {
     );
   };
 
-  /** Open add-memory flow from map FAB: pick activity if multiple, then add memory. */
-  const handleAddMemoryFromMap = () => {
-    if (myActivities.length === 0) return;
-    if (myActivities.length === 1) {
-      handleAddMemory(myActivities[0]);
+  const handleDeleteMapSpecial = () => {
+    const s = selectedMapSpecial;
+    if (!s || !auth.currentUser || s.createdBy !== auth.currentUser.uid) {
+      Alert.alert('Error', 'Only the creator can delete this deal.');
       return;
     }
-    Alert.alert(
-      'Add memory to',
-      'Choose an activity',
-      [
-        ...myActivities.slice(0, 5).map((a) => ({
-          text: a.title.length > 30 ? a.title.slice(0, 27) + '…' : a.title,
-          onPress: () => handleAddMemory(a),
-        })),
-        { text: 'Cancel', style: 'cancel' },
-      ]
-    );
+    Alert.alert('Delete deal', 'Remove this pin and stop notifications? This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deleteDoc(doc(db, 'mapSpecials', s.id));
+            setMapSpecials((prev) => prev.filter((x) => x.id !== s.id));
+            setSelectedMapSpecial(null);
+          } catch (error: any) {
+            console.error('Error deleting map special:', error);
+            Alert.alert('Error', 'Could not delete.');
+          }
+        },
+      },
+    ]);
+  };
+
+  /** Open add-memory flow from map FAB: pick activity if multiple, then add memory. */
+  const handleAddMemoryFromMap = () => {
+    if (myOngoingActivities.length === 0) return;
+    if (myOngoingActivities.length === 1) {
+      handleAddMemory(myOngoingActivities[0]);
+      return;
+    }
+    setShowMemoryActivityPicker(true);
   };
 
   const handleAddMemory = async (activity: Activity) => {
@@ -1497,6 +1587,41 @@ export default function MapScreen() {
           </Callout>
         </Marker>
       ))}
+      {mapSpecialsForMap.map((special) => (
+        <Marker
+          key={`special_${special.id}`}
+          coordinate={{ latitude: special.latitude, longitude: special.longitude }}
+          onPress={() => setSelectedMapSpecial(special)}
+        >
+          <View style={[localStyles.markerContainer, { backgroundColor: '#E65100' }]}>
+            <Ionicons name="pricetag" size={22} color="#FFFFFF" />
+          </View>
+          <Callout onPress={() => setSelectedMapSpecial(special)}>
+            <View style={localStyles.calloutContainer}>
+              <Text style={[localStyles.calloutTitle, { color: colors.text }]}>{special.title}</Text>
+              {(special.location || special.placeName) ? (
+                <Text style={[localStyles.calloutText, { color: colors.textSecondary }]} numberOfLines={2}>
+                  {special.location || special.placeName}
+                </Text>
+              ) : null}
+              <Text style={[localStyles.calloutText, { color: colors.textSecondary }]}>
+                {formatUtcWeekdays(special.weekdays)} (UTC)
+              </Text>
+              <Text style={[localStyles.calloutText, { color: colors.textSecondary }]}>
+                {formatUtcDealTime(special.dealTimeUtc)}
+              </Text>
+              {special.distance !== undefined && (
+                <Text style={[localStyles.calloutText, { color: colors.textSecondary }]}>
+                  {special.distance} km away
+                </Text>
+              )}
+              <Text style={[localStyles.calloutText, { color: colors.textSecondary }]}>
+                by {special.creatorName || 'Someone'}
+              </Text>
+            </View>
+          </Callout>
+        </Marker>
+      ))}
       {/* Highlight marker when user taps "View on map" from a memory */}
       {highlightedMemoryLocation && (
         <Marker
@@ -1542,8 +1667,21 @@ export default function MapScreen() {
         <View style={StyleSheet.absoluteFillObject}>
           {renderMapContent(true)}
         </View>
+        <View style={[localStyles.specialsFabContainer, { bottom: fabBottom }]} pointerEvents="box-none">
+          <TouchableOpacity
+            style={[localStyles.actionButton, { backgroundColor: '#E65100' }]}
+            onPress={() => {
+              const lat = userLocation?.coords.latitude ?? region.latitude;
+              const lng = userLocation?.coords.longitude ?? region.longitude;
+              navigation.navigate('CreateMapSpecialScreen', { latitude: lat, longitude: lng });
+            }}
+            accessibilityLabel="Add location deal or special"
+          >
+            <Ionicons name="pricetag" size={24} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
         {myOngoingActivities.length > 0 && (
-          <View style={[localStyles.cameraFabContainer, { bottom: fabBottom }]} pointerEvents="box-none">
+          <View style={[localStyles.cameraFabContainer, { bottom: fabBottom + 60 }]} pointerEvents="box-none">
             <TouchableOpacity
               style={[localStyles.actionButton, { backgroundColor: colors.primary }]}
               onPress={handleAddMemoryFromMap}
@@ -1567,7 +1705,10 @@ export default function MapScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={[localStyles.actionButton, { backgroundColor: colors.primary, marginTop: 10 }]}
-            onPress={() => setShowActivitiesList(true)}
+            onPress={() => {
+              setActivityListTab('activities');
+              setShowActivitiesList(true);
+            }}
           >
             <Ionicons name="list" size={24} color="#FFFFFF" />
           </TouchableOpacity>
@@ -1827,7 +1968,14 @@ export default function MapScreen() {
             onPress={() => setSelectedActivity(null)}
           />
           <View
-            style={[localStyles.bottomSheetContent, { backgroundColor: colors.card }]}
+            style={[
+              localStyles.bottomSheetContent,
+              {
+                backgroundColor: colors.card,
+                marginBottom: modalBottomSafeSpace,
+                paddingBottom: modalBottomSafeSpace + 24,
+              },
+            ]}
             onStartShouldSetResponder={() => true}
           >
             {/* Handle bar */}
@@ -2089,6 +2237,181 @@ export default function MapScreen() {
         </View>
       </Modal>
 
+      {/* Memory activity picker (camera FAB): vertical, scrollable list */}
+      <Modal
+        visible={showMemoryActivityPicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowMemoryActivityPicker(false)}
+      >
+        <View style={localStyles.modalOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setShowMemoryActivityPicker(false)}
+          />
+          <View
+            style={[localStyles.bottomSheetContent, { backgroundColor: colors.card }]}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={localStyles.handleBar} />
+            <View style={[localStyles.listHeader, { backgroundColor: colors.card }]}>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={[localStyles.listHeaderText, { color: colors.text }]}>Add memory to</Text>
+                <Text style={{ color: colors.textSecondary, fontSize: 13, marginTop: 2 }}>
+                  Choose one of your ongoing activities
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowMemoryActivityPicker(false)}
+                style={localStyles.closeIconButton}
+              >
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            {myOngoingActivities.length === 0 ? (
+              <View style={localStyles.emptyContainer}>
+                <Ionicons name="camera-outline" size={64} color={colors.textSecondary} />
+                <Text style={[localStyles.emptyText, { color: colors.textSecondary }]}>
+                  No ongoing activities available
+                </Text>
+              </View>
+            ) : (
+              <FlatList
+                data={myOngoingActivities}
+                keyExtractor={(item) => item.id}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={[localStyles.activityCard, { backgroundColor: colors.card }]}
+                    onPress={() => {
+                      setShowMemoryActivityPicker(false);
+                      handleAddMemory(item);
+                    }}
+                  >
+                    <View
+                      style={[
+                        localStyles.activityIconContainer,
+                        { backgroundColor: getActivityColor(item.activityType) },
+                      ]}
+                    >
+                      <Ionicons
+                        name={getActivityIcon(item.activityType) as any}
+                        size={24}
+                        color="#FFFFFF"
+                      />
+                    </View>
+                    <View style={localStyles.activityCardContent}>
+                      <Text style={[localStyles.activityCardTitle, { color: colors.text }]} numberOfLines={1}>
+                        {item.title}
+                      </Text>
+                      <Text
+                        style={[localStyles.activityCardText, { color: colors.textSecondary, marginBottom: 4 }]}
+                        numberOfLines={1}
+                      >
+                        {item.location || 'No location'}
+                      </Text>
+                      <Text style={[localStyles.activityCardMetaText, { color: colors.textSecondary }]}>
+                        {getActivityTypeLabel(item.activityType)} • {item.participants.length}{' '}
+                        {item.participants.length === 1 ? 'participant' : 'participants'}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={22} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                )}
+                contentContainerStyle={{ paddingBottom: 100 }}
+                showsVerticalScrollIndicator
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={selectedMapSpecial !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSelectedMapSpecial(null)}
+      >
+        <View style={localStyles.modalOverlay}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setSelectedMapSpecial(null)}
+          />
+          <View
+            style={[localStyles.bottomSheetContent, { backgroundColor: colors.card }]}
+            onStartShouldSetResponder={() => true}
+          >
+            <View style={localStyles.handleBar} />
+            {selectedMapSpecial && (
+              <>
+                <View style={[localStyles.listHeader, { backgroundColor: colors.card }]}>
+                  <View style={{ flex: 1, paddingRight: 8 }}>
+                    <Text style={[localStyles.modalTitle, { color: colors.text, marginBottom: 4 }]}>
+                      {selectedMapSpecial.title}
+                    </Text>
+                    {(selectedMapSpecial.location || selectedMapSpecial.placeName) ? (
+                      <Text style={{ color: colors.textSecondary, fontSize: 14 }}>
+                        {selectedMapSpecial.location || selectedMapSpecial.placeName}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <TouchableOpacity onPress={() => setSelectedMapSpecial(null)} style={localStyles.closeIconButton}>
+                    <Ionicons name="close" size={24} color={colors.text} />
+                  </TouchableOpacity>
+                </View>
+                <ScrollView
+                  style={{ maxHeight: 280 }}
+                  contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: modalBottomSafeSpace + 24 }}
+                >
+                  {selectedMapSpecial.imageUrl ? (
+                    <Image
+                      source={{ uri: selectedMapSpecial.imageUrl }}
+                      style={{ width: '100%', height: 170, borderRadius: 10, marginBottom: 12 }}
+                      resizeMode="cover"
+                    />
+                  ) : null}
+                  {selectedMapSpecial.description ? (
+                    <Text style={{ color: colors.text, fontSize: 15, lineHeight: 22 }}>{selectedMapSpecial.description}</Text>
+                  ) : (
+                    <Text style={{ color: colors.textSecondary }}>No extra details.</Text>
+                  )}
+                  <Text style={{ color: colors.textSecondary, marginTop: 12, fontSize: 13 }}>
+                    Active: {formatUtcWeekdays(selectedMapSpecial.weekdays)} (UTC)
+                  </Text>
+                  <Text style={{ color: colors.textSecondary, marginTop: 6, fontSize: 13 }}>
+                    Time: {formatUtcDealTime(selectedMapSpecial.dealTimeUtc)}
+                  </Text>
+                  {selectedMapSpecial.distance != null && (
+                    <Text style={{ color: colors.textSecondary, marginTop: 6, fontSize: 13 }}>
+                      {selectedMapSpecial.distance} km away
+                    </Text>
+                  )}
+                  <Text style={{ color: colors.textSecondary, marginTop: 6, fontSize: 13 }}>
+                    by {selectedMapSpecial.creatorName || 'Someone'}
+                  </Text>
+                  {auth.currentUser && selectedMapSpecial.createdBy === auth.currentUser.uid && (
+                    <TouchableOpacity
+                      style={{
+                        marginTop: 20,
+                        backgroundColor: '#DC3545',
+                        paddingVertical: 14,
+                        borderRadius: 12,
+                        alignItems: 'center',
+                      }}
+                      onPress={handleDeleteMapSpecial}
+                    >
+                      <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 16 }}>Delete deal</Text>
+                    </TouchableOpacity>
+                  )}
+                </ScrollView>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       {/* Memory viewer - full screen, tap to next/prev */}
       <Modal
         visible={memoryViewerVisible}
@@ -2211,26 +2534,74 @@ export default function MapScreen() {
             
             {/* Header */}
             <View style={[localStyles.listHeader, { backgroundColor: colors.card }]}>
-              <Text style={[localStyles.listHeaderText, { color: colors.text }]}>
-                {activitiesForMap.length} {activitiesForMap.length === 1 ? 'Activity' : 'Activities'} within 50km
-            </Text>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={[localStyles.listHeaderText, { color: colors.text }]}>
+                  {activitiesForMap.length} {activitiesForMap.length === 1 ? 'Activity' : 'Activities'} within 50km
+                </Text>
+                <Text style={{ color: colors.textSecondary, fontSize: 13, marginTop: 2 }}>
+                  {mapSpecialsForMap.length} {mapSpecialsForMap.length === 1 ? 'Special' : 'Specials'} within 15km
+                </Text>
+              </View>
               <TouchableOpacity
                 onPress={() => setShowActivitiesList(false)}
                 style={localStyles.closeIconButton}
               >
                 <Ionicons name="close" size={24} color={colors.text} />
               </TouchableOpacity>
-          </View>
+            </View>
 
-            {/* Activities list */}
-            {loading ? (
+            {/* Toggle between activities and specials */}
+            <View style={[localStyles.listToggleRow, { borderBottomColor: colors.border }]}>
+              <TouchableOpacity
+                style={[
+                  localStyles.listToggleButton,
+                  {
+                    backgroundColor: activityListTab === 'activities' ? colors.primary : colors.background,
+                    borderColor: activityListTab === 'activities' ? colors.primary : colors.border,
+                  },
+                ]}
+                onPress={() => setActivityListTab('activities')}
+              >
+                <Text
+                  style={{
+                    color: activityListTab === 'activities' ? '#FFF' : colors.text,
+                    fontWeight: '700',
+                  }}
+                >
+                  Activities
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  localStyles.listToggleButton,
+                  {
+                    backgroundColor: activityListTab === 'specials' ? colors.primary : colors.background,
+                    borderColor: activityListTab === 'specials' ? colors.primary : colors.border,
+                  },
+                ]}
+                onPress={() => setActivityListTab('specials')}
+              >
+                <Text
+                  style={{
+                    color: activityListTab === 'specials' ? '#FFF' : colors.text,
+                    fontWeight: '700',
+                  }}
+                >
+                  Specials
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {activityListTab === 'activities' ? (
+              /* Activities list */
+              loading ? (
               <View style={localStyles.loadingContainer}>
                 <ActivityIndicator size="large" color={colors.primary} />
                 <Text style={[localStyles.loadingText, { color: colors.text }]}>
                   Loading activities...
                 </Text>
-        </View>
-            ) : activitiesForMap.length === 0 ? (
+              </View>
+              ) : activitiesForMap.length === 0 ? (
               <View style={localStyles.emptyContainer}>
                 <Ionicons name="location-outline" size={64} color={colors.textSecondary} />
                 <Text style={[localStyles.emptyText, { color: colors.textSecondary }]}>
@@ -2305,6 +2676,57 @@ export default function MapScreen() {
                 )}
                 contentContainerStyle={{ paddingBottom: 100 }}
               />
+              )
+            ) : (
+              mapSpecialsForMap.length === 0 ? (
+                <View style={localStyles.emptyContainer}>
+                  <Ionicons name="pricetag-outline" size={64} color={colors.textSecondary} />
+                  <Text style={[localStyles.emptyText, { color: colors.textSecondary }]}>
+                    No specials found within 15km
+                  </Text>
+                  <Text style={[localStyles.emptySubtext, { color: colors.textSecondary }]}>
+                    Add one from the map tag button.
+                  </Text>
+                </View>
+              ) : (
+                <FlatList
+                  data={mapSpecialsForMap}
+                  keyExtractor={(item) => item.id}
+                  renderItem={({ item }) => (
+                    <TouchableOpacity
+                      style={[localStyles.activityCard, { backgroundColor: colors.card }]}
+                      onPress={() => {
+                        setShowActivitiesList(false);
+                        setSelectedMapSpecial(item);
+                      }}
+                    >
+                      <View style={[localStyles.activityIconContainer, { backgroundColor: '#E65100' }]}>
+                        <Ionicons name="pricetag" size={24} color="#FFFFFF" />
+                      </View>
+                      <View style={localStyles.activityCardContent}>
+                        <Text style={[localStyles.activityCardTitle, { color: colors.text }]}>{item.title}</Text>
+                        <Text style={[localStyles.activityCardText, { color: colors.textSecondary }]} numberOfLines={1}>
+                          {(item.location || item.placeName || 'No location')}
+                        </Text>
+                        <View style={localStyles.activityCardMeta}>
+                          <Text style={[localStyles.activityCardMetaText, { color: colors.textSecondary }]}>
+                            {formatUtcWeekdays(item.weekdays)} (UTC)
+                          </Text>
+                        </View>
+                        <View style={localStyles.activityCardFooter}>
+                          <Text style={[localStyles.activityCardDistance, { color: colors.primary }]}>
+                            {item.distance} km away
+                          </Text>
+                          <Text style={[localStyles.activityCardCreator, { color: colors.textSecondary }]}>
+                            by {item.creatorName || 'Someone'}
+                          </Text>
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  )}
+                  contentContainerStyle={{ paddingBottom: 100 }}
+                />
+              )
             )}
           </View>
         </View>
@@ -2606,18 +3028,6 @@ export default function MapScreen() {
 
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 16, paddingHorizontal: 4 }}>
                   <Text style={{ fontSize: 16, color: colors.text, flex: 1 }}>
-                    Only my friends can see this activity
-                  </Text>
-                  <Switch
-                    value={activityFriendsOnly}
-                    onValueChange={setActivityFriendsOnly}
-                    trackColor={{ false: colors.border, true: colors.primary }}
-                    thumbColor="#FFFFFF"
-                  />
-                </View>
-
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 16, paddingHorizontal: 4 }}>
-                  <Text style={{ fontSize: 16, color: colors.text, flex: 1 }}>
                     Require approval to join (users request; you accept or decline)
                   </Text>
                   <Switch
@@ -2692,6 +3102,21 @@ const localStyles = StyleSheet.create({
   listHeaderText: {
     fontSize: 16,
     fontWeight: '600',
+  },
+  listToggleRow: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  listToggleButton: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
   },
   activityCard: {
     flexDirection: 'row',
@@ -2791,6 +3216,10 @@ const localStyles = StyleSheet.create({
     position: 'absolute',
     bottom: 90,
     right: 20,
+  },
+  specialsFabContainer: {
+    position: 'absolute',
+    left: 20,
   },
   cameraFabContainer: {
     position: 'absolute',

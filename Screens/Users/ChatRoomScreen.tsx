@@ -58,7 +58,6 @@ import {
   deleteDoc,
   increment,
   arrayUnion,
-  writeBatch,
 } from 'firebase/firestore';
 import { db, auth } from '../../firebaseConfig';
 import { RootStackParamList } from '../../types';
@@ -137,6 +136,14 @@ interface Message {
   uploadError?: string;
 }
 
+interface PinnedMessage {
+  messageId: string;
+  text: string;
+  senderId?: string;
+  pinnedBy?: string;
+  pinnedAt?: any;
+}
+
 const AVATAR_PLACEHOLDER = require('../../assets/avatar-placeholder.png');
 
 const EMOJI_API_URL =
@@ -145,6 +152,35 @@ const EMOJI_API_URL =
 const FALLBACK_EMOJIS = [
   '😀','😂','🤣','😊','😇','🥰','😍','🤩','😘','😗','😙','😚','😋','😛','😜','🤪','😝','🤤','😴','😷','🤒','🤕','🤢','🤮','🤧','🥵','🥶','😵','🤯','🤠','🥳','😎','🤓','🤔','🫣','🤫','🫢','🫡','🤥','🫠','😮‍💨','😤','😠','😡','🤬','😈','👿','💀','👻','👽','👾','🤖','💩','🤡','👹','👺','😺','😸','😹','😻','😼','😽','🙀','😿','😾','👋','🤚','🖐️','✋','🖖','👌','🤏','🤞','✌️','🤘','🤙','👈','👉','👆','👇','☝️','👍','👎','✊','👊','🤛','🤜','👏','🙌','🫶','🤲','🤝',
 ];
+
+const URL_REGEX = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+
+const cleanTrailingPunctuation = (value: string) => value.replace(/[),.!?;:]+$/g, '');
+
+const normalizeUrl = (value: string) => {
+  const cleaned = cleanTrailingPunctuation(value.trim());
+  if (!cleaned) return '';
+  return /^https?:\/\//i.test(cleaned) ? cleaned : `https://${cleaned}`;
+};
+
+const splitMessageByUrls = (text: string) => {
+  const parts: Array<{ text: string; isLink: boolean }> = [];
+  let lastIndex = 0;
+  const matches = Array.from(text.matchAll(URL_REGEX));
+  for (const match of matches) {
+    const found = match[0];
+    const start = match.index ?? 0;
+    if (start > lastIndex) {
+      parts.push({ text: text.slice(lastIndex, start), isLink: false });
+    }
+    parts.push({ text: found, isLink: true });
+    lastIndex = start + found.length;
+  }
+  if (lastIndex < text.length) {
+    parts.push({ text: text.slice(lastIndex), isLink: false });
+  }
+  return parts.length > 0 ? parts : [{ text, isLink: false }];
+};
 
 const ChatRoomScreen = () => {
   const route = useRoute<ChatRoomScreenRouteProp>();
@@ -163,28 +199,8 @@ const ChatRoomScreen = () => {
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
   const [showMessageOptions, setShowMessageOptions] = useState(false);
   const [showAttachmentOptions, setShowAttachmentOptions] = useState(false);
-  const [isFriend, setIsFriend] = useState(false);
-  const [showFriendRequestHint, setShowFriendRequestHint] = useState(false);
+  const [pinnedMessage, setPinnedMessage] = useState<PinnedMessage | null>(null);
   
-  // Show hint automatically when user first sees the button (if not a friend)
-  useEffect(() => {
-    if (!isFriend && !loading) {
-      const timer = setTimeout(() => {
-        setShowFriendRequestHint(true);
-      }, 1000); // Show after 1 second
-      return () => clearTimeout(timer);
-    }
-  }, [isFriend, loading]);
-  
-  // Auto-dismiss hint after 4 seconds
-  useEffect(() => {
-    if (showFriendRequestHint) {
-      const timer = setTimeout(() => {
-        setShowFriendRequestHint(false);
-      }, 4000);
-      return () => clearTimeout(timer);
-    }
-  }, [showFriendRequestHint]);
 
   // 🖼 Unified media viewer
   const [mediaViewerVisible, setMediaViewerVisible] = useState(false);
@@ -250,42 +266,6 @@ const ChatRoomScreen = () => {
           setRecipientProfilePic(null);
         }
 
-        // Check if recipient is a friend
-        let weHaveThemAsFriend = false;
-        if (currentUser) {
-          const currentUserRef = doc(db, 'users', currentUser.uid);
-          const currentUserSnap = await getDoc(currentUserRef);
-          if (currentUserSnap.exists()) {
-            const friendsData = currentUserSnap.data().friends;
-            // Handle both array (legacy) and map (new) formats
-            if (Array.isArray(friendsData)) {
-              weHaveThemAsFriend = friendsData.includes(recipientId);
-              setIsFriend(weHaveThemAsFriend);
-            } else if (friendsData && typeof friendsData === 'object') {
-              weHaveThemAsFriend = friendsData[recipientId] === true;
-              setIsFriend(weHaveThemAsFriend);
-            } else {
-              setIsFriend(false);
-            }
-          }
-        }
-
-        // Repair: if we already have them as friend (e.g. we accepted on another device) but their doc doesn't have us, add ourselves so their Friends list updates
-        if (weHaveThemAsFriend && userDoc.exists()) {
-          const theirData = userDoc.data();
-          const f = theirData?.friends;
-          let theirFriends: Record<string, boolean> = {};
-          if (Array.isArray(f)) theirFriends = Object.fromEntries((f as string[]).map((id: string) => [id, true]));
-          else if (f && typeof f === 'object' && f !== null)
-            theirFriends = Object.fromEntries(
-              Object.entries(f as Record<string, unknown>).filter(([, v]) => v === true).map(([k]) => [k, true])
-            );
-          if (theirFriends[currentUser!.uid] !== true) {
-            const theirNew = { ...theirFriends, [currentUser!.uid]: true };
-            updateDoc(userDocRef, { friends: theirNew }).catch(() => {});
-          }
-        }
-
         // Set messages immediately from initial load
         if (messagesSnap) {
           const initialMessages = messagesSnap.docs.map((d) => ({
@@ -330,24 +310,11 @@ const ChatRoomScreen = () => {
 
     loadInitialData();
 
-    // Set up real-time listener for friend status
-    let friendStatusUnsub: (() => void) | null = null;
-    if (currentUser) {
-      const currentUserRef = doc(db, 'users', currentUser.uid);
-      friendStatusUnsub = onSnapshot(currentUserRef, (snap) => {
-        if (snap.exists()) {
-          const friendsData = snap.data().friends;
-          // Handle both array (legacy) and map (new) formats
-          if (Array.isArray(friendsData)) {
-            setIsFriend(friendsData.includes(recipientId));
-          } else if (friendsData && typeof friendsData === 'object') {
-            setIsFriend(friendsData[recipientId] === true);
-          } else {
-            setIsFriend(false);
-          }
-        }
-      });
-    }
+    const chatMetaUnsubscribe = onSnapshot(doc(db, 'chats', chatId), (snap) => {
+      if (snap.exists()) {
+        setPinnedMessage((snap.data()?.pinnedMessage as PinnedMessage) || null);
+      }
+    });
 
     // Set up real-time listener for new messages (after initial load)
     const messagesRef = collection(db, 'chats', chatId, 'messages');
@@ -372,9 +339,7 @@ const ChatRoomScreen = () => {
 
     return () => {
       unsubscribe();
-      if (friendStatusUnsub) {
-        friendStatusUnsub();
-      }
+      chatMetaUnsubscribe();
     };
   }, [chatId, currentUser, recipientId, navigation]);
 
@@ -754,64 +719,53 @@ const handlePickFile = async () => {
     sendMessage({ text: newMessage.trim() });
   };
 
-  /** Normalize friends field to map { [uid]: true } for safe writes */
-  const friendsToMap = (data: { friends?: unknown } | null | undefined): Record<string, boolean> => {
-    if (!data?.friends) return {};
-    const f = data.friends;
-    if (Array.isArray(f)) return Object.fromEntries((f as string[]).map((id) => [id, true]));
-    if (typeof f === "object" && f !== null)
-      return Object.fromEntries(
-        Object.entries(f as Record<string, unknown>).filter(([, v]) => v === true).map(([k]) => [k, true])
-      );
-    return {};
+  const getPinPreview = (msg: Message) => {
+    if (msg.text && msg.text.trim()) return msg.text.trim().slice(0, 160);
+    if (msg.mediaType === 'image') return 'Image';
+    if (msg.mediaType === 'video') return 'Video';
+    if (msg.mediaType === 'file') return msg.fileName ? `File: ${msg.fileName}` : 'File';
+    return 'Pinned message';
   };
 
-  /** ✅ Accept friend request — read-modify-write both docs as maps, batch so both succeed or both fail */
-  const handleAcceptFriend = async () => {
-    if (!currentUser) return;
+  const togglePinSelectedMessage = async () => {
+    if (!selectedMessage || !currentUser) return;
+    const chatDocRef = doc(db, 'chats', chatId);
     try {
-      const currentUserRef = doc(db, "users", currentUser.uid);
-      const otherUserRef = doc(db, "users", recipientId);
-      const [currentSnap, otherSnap] = await Promise.all([getDoc(currentUserRef), getDoc(otherUserRef)]);
-
-      const myFriends = friendsToMap(currentSnap.exists() ? currentSnap.data() : null);
-      const theirFriends = friendsToMap(otherSnap.exists() ? otherSnap.data() : null);
-      const myNew = { ...myFriends, [recipientId]: true };
-      const theirNew = { ...theirFriends, [currentUser.uid]: true };
-
-      const batch = writeBatch(db);
-      batch.update(currentUserRef, { friends: myNew });
-      batch.update(otherUserRef, { friends: theirNew });
-      await batch.commit();
-
-      setIsFriend(true);
-      Alert.alert("Success", "Friend request accepted!");
-    } catch (error: any) {
-      console.error("Error accepting friend:", error);
-      console.error("Accept friend request failed:", error.message || error.code);
+      if (pinnedMessage?.messageId === selectedMessage.id) {
+        await updateDoc(chatDocRef, { pinnedMessage: null });
+      } else {
+        await updateDoc(chatDocRef, {
+          pinnedMessage: {
+            messageId: selectedMessage.id,
+            text: getPinPreview(selectedMessage),
+            senderId: selectedMessage.senderId,
+            pinnedBy: currentUser.uid,
+            pinnedAt: serverTimestamp(),
+          },
+        });
+      }
+    } catch (error) {
+      console.error('Failed to toggle pin:', error);
+      Alert.alert('Error', 'Could not update pinned message.');
+    } finally {
+      setShowMessageOptions(false);
+      setSelectedMessage(null);
     }
   };
 
-  /** 🚫 Ignore friend request (mute notifications from this user) */
-  const handleIgnoreFriendRequest = async () => {
-    if (!currentUser) return;
+  const openMessageLink = async (rawUrl: string) => {
+    const url = normalizeUrl(rawUrl);
+    if (!url) return;
     try {
-      const currentUserRef = doc(db, "users", currentUser.uid);
-      const currentUserSnap = await getDoc(currentUserRef);
-      const ignoredUsers: string[] = currentUserSnap.exists() 
-        ? (currentUserSnap.data().ignoredUsers || []) 
-        : [];
-      
-      if (!ignoredUsers.includes(recipientId)) {
-        await updateDoc(currentUserRef, {
-          ignoredUsers: [...ignoredUsers, recipientId],
-        });
+      const canOpen = await Linking.canOpenURL(url);
+      if (!canOpen) {
+        Alert.alert('Invalid link', 'This link cannot be opened.');
+        return;
       }
-
-      Alert.alert("Ignored", "You won't receive push notifications from this user, but you can still see their messages.");
-    } catch (error: any) {
-      console.error("Error ignoring friend request:", error);
-      console.error("Could not ignore friend request:", error);
+      await Linking.openURL(url);
+    } catch (error) {
+      console.error('Failed to open link:', error);
+      Alert.alert('Error', 'Could not open this link.');
     }
   };
 
@@ -1100,40 +1054,6 @@ const handlePickFile = async () => {
     const isCurrentUser = item.senderId === currentUser?.uid;
     const messageIndex = messages.findIndex((msg) => msg.id === item.id);
     
-    // Check if this is a friend request message
-    // Show buttons on any message from recipient that looks like a friend request when not a friend
-    const friendRequestTexts = [
-      "Hi! I'd like to add you as a friend.",
-      "Hi! I'd like to add you as a friend",
-      "I'd like to add you as a friend.",
-      "I'd like to add you as a friend",
-    ];
-    
-    const isFriendRequestMessage = item.text ? friendRequestTexts.some(text => 
-      item.text!.trim().toLowerCase() === text.trim().toLowerCase()
-    ) : false;
-    
-    // Show buttons if:
-    // 1. Message is from recipient (not current user)
-    // 2. They're not friends yet
-    // 3. Message text matches friend request pattern
-    // 4. This is the most recent friend request message from recipient (to avoid showing on old ones)
-    const isFriendRequest = !isCurrentUser && 
-      !isFriend && 
-      isFriendRequestMessage &&
-      // Only show on the most recent friend request message from recipient
-      messages
-        .filter(msg => 
-          msg.senderId === recipientId && 
-          msg.text && 
-          friendRequestTexts.some(text => msg.text!.trim().toLowerCase() === text.trim().toLowerCase())
-        )
-        .sort((a, b) => {
-          const aTime = a.createdAt?.toDate?.()?.getTime() || 0;
-          const bTime = b.createdAt?.toDate?.()?.getTime() || 0;
-          return bTime - aTime; // Most recent first
-        })[0]?.id === item.id;
-
     return (
       <TouchableOpacity
         activeOpacity={1}
@@ -1195,21 +1115,8 @@ const handlePickFile = async () => {
                 }}>
                   <ActivityIndicator size="large" color={colors.primary} />
                 </View>
-                <View style={{
-                  height: 4,
-                  backgroundColor: colors.border || '#E0E0E0',
-                  borderRadius: 2,
-                  overflow: 'hidden',
-                  marginTop: SPACING.xsmall,
-                }}>
-                  <View style={{
-                    height: '100%',
-                    width: `${item.uploadProgress || 0}%`,
-                    backgroundColor: colors.primary,
-                  }} />
-                </View>
                 <Text style={[styles.timestampText, { marginTop: SPACING.xsmall, fontSize: FONT_SIZES.xsmall }]}>
-                  Uploading {item.uploadProgress || 0}%
+                  Uploading media...
                 </Text>
               </>
             )}
@@ -1284,41 +1191,24 @@ const handlePickFile = async () => {
 
         {item.text ? (
           <Text style={isCurrentUser ? styles.myMessageText : styles.otherMessageText}>
-            {item.text}
+            {splitMessageByUrls(item.text).map((part, idx) =>
+              part.isLink ? (
+                <Text
+                  key={`link_${item.id}_${idx}`}
+                  style={{
+                    textDecorationLine: 'underline',
+                    color: isCurrentUser ? '#D7EEFF' : colors.primary,
+                  }}
+                  onPress={() => openMessageLink(part.text)}
+                >
+                  {part.text}
+                </Text>
+              ) : (
+                <Text key={`txt_${item.id}_${idx}`}>{part.text}</Text>
+              )
+            )}
           </Text>
         ) : null}
-
-        {/* Accept and Ignore buttons for friend request messages */}
-        {isFriendRequest && (
-          <View style={{ flexDirection: 'row', gap: 8, marginTop: 8, alignSelf: 'flex-start' }}>
-            <TouchableOpacity
-              onPress={handleAcceptFriend}
-              style={{
-                backgroundColor: colors.primary,
-                paddingHorizontal: 16,
-                paddingVertical: 8,
-                borderRadius: 8,
-              }}
-            >
-              <Text style={{ color: colors.buttonText || '#fff', fontWeight: '600', fontSize: 14 }}>
-                Accept
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={handleIgnoreFriendRequest}
-              style={{
-                backgroundColor: colors.secondaryText || '#666',
-                paddingHorizontal: 16,
-                paddingVertical: 8,
-                borderRadius: 8,
-              }}
-            >
-              <Text style={{ color: colors.buttonText || '#fff', fontWeight: '600', fontSize: 14 }}>
-                Ignore
-              </Text>
-            </TouchableOpacity>
-          </View>
-        )}
 
         <Text style={styles.timestampText}>
           {item.createdAt?.toDate
@@ -1377,62 +1267,30 @@ const handlePickFile = async () => {
           <Text style={styles.headerTitle}>{recipientUsername}</Text>
         </TouchableOpacity>
 
-        {!isFriend && (
-          <View style={{ marginLeft: 'auto', position: 'relative' }}>
-            <TouchableOpacity
-              onPress={() => {
-                if (newMessage.trim()) {
-                  handleSendText();
-                } else {
-                  // Send a default friend request message
-                  sendMessage({ text: 'Hi! I\'d like to add you as a friend.' });
-                }
-                setShowFriendRequestHint(false);
-              }}
-              onLongPress={() => setShowFriendRequestHint(true)}
-              style={{
-                padding: 8,
-                justifyContent: 'center',
-                alignItems: 'center',
-              }}
-            >
-              <Ionicons
-                name="person-add-outline"
-                size={FONT_SIZES.xxlarge}
-                color={colors.primary}
-              />
-            </TouchableOpacity>
-            
-            {showFriendRequestHint && (
-              <Pressable
-                onPress={() => setShowFriendRequestHint(false)}
-                style={{
-                  position: 'absolute',
-                  top: 45,
-                  right: 0,
-                  backgroundColor: colors.background || '#1a1a2e',
-                  paddingHorizontal: 12,
-                  paddingVertical: 6,
-                  borderRadius: 8,
-                  borderWidth: 1,
-                  borderColor: colors.borderColor || colors.primary,
-                  zIndex: 1000,
-                  shadowColor: '#000',
-                  shadowOffset: { width: 0, height: 2 },
-                  shadowOpacity: 0.25,
-                  shadowRadius: 3.84,
-                  elevation: 5,
-                  minWidth: 140,
-                }}
-              >
-                <Text style={{ color: colors.text || '#fff', fontSize: 12, fontWeight: '500', textAlign: 'center' }}>
-                  Send friend request
-                </Text>
-              </Pressable>
-            )}
-          </View>
-        )}
+        <View style={{ width: 40 }} />
       </View>
+      {pinnedMessage ? (
+        <View
+          style={{
+            marginHorizontal: 12,
+            marginTop: 6,
+            marginBottom: 6,
+            borderRadius: 10,
+            paddingHorizontal: 10,
+            paddingVertical: 8,
+            backgroundColor: colors.cardBackground,
+            borderWidth: 1,
+            borderColor: colors.border,
+            flexDirection: 'row',
+            alignItems: 'center',
+          }}
+        >
+          <Ionicons name="pin" size={14} color={colors.primary} style={{ marginRight: 8 }} />
+          <Text style={{ color: colors.textSecondary, flex: 1 }} numberOfLines={1}>
+            {pinnedMessage.text}
+          </Text>
+        </View>
+      ) : null}
 
       <FlatList
         ref={flatListRef}
@@ -1483,7 +1341,7 @@ const handlePickFile = async () => {
               size={FONT_SIZES.xxlarge}
               color={colors.primary}
             />
-</TouchableOpacity>
+            </TouchableOpacity>
 
             <TextInput
               style={[styles.textInput, { maxHeight: 120, textAlignVertical: 'top' }]}
@@ -1796,6 +1654,19 @@ const handlePickFile = async () => {
                     <Text style={{ color: colors.text, fontSize: 16 }}>Copy</Text>
                   </TouchableOpacity>
                 )}
+                <TouchableOpacity
+                  style={{
+                    paddingVertical: 16,
+                    paddingHorizontal: 20,
+                    borderBottomWidth: 1,
+                    borderBottomColor: colors.border,
+                  }}
+                  onPress={togglePinSelectedMessage}
+                >
+                  <Text style={{ color: colors.text, fontSize: 16 }}>
+                    {pinnedMessage?.messageId === selectedMessage.id ? 'Unpin' : 'Pin'}
+                  </Text>
+                </TouchableOpacity>
                 {selectedMessage.senderId === currentUser?.uid && (
                   <TouchableOpacity
                     style={{

@@ -5,11 +5,10 @@ import {
   TextInput,
   TouchableOpacity,
   ScrollView,
-  SafeAreaView,
   Alert,
   ActivityIndicator,
   Image,
-  StyleSheet 
+  Platform,
 } from "react-native";
 import { RouteProp, useNavigation, useRoute } from "@react-navigation/native"; 
 import { StackNavigationProp } from "@react-navigation/stack";
@@ -21,7 +20,8 @@ import { RootStackParamList } from "../../../types";
 import { useTheme } from '../../context/ThemeContext'; 
 import createStyles from '../../context/appStyles'; 
 import { SPACING, FONT_SIZES } from '../../context/appStyles'; 
-import { Ionicons } from '@expo/vector-icons'; 
+import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 type GroupDetailsScreenRouteProp = RouteProp<RootStackParamList, "GroupDetailsScreen">;
 type GroupDetailsScreenNavigationProp = StackNavigationProp<RootStackParamList, "GroupDetailsScreen">;
@@ -43,10 +43,20 @@ const GroupDetailsScreen = () => {
   const [uploadingImage, setUploadingImage] = useState(false);
 
   const { colors } = useTheme(); 
+  const insets = useSafeAreaInsets();
   const styles = createStyles(colors).groupDetailsScreen;
   const globalStyles = createStyles(colors).global; 
 
   const currentUserId = auth.currentUser?.uid;
+
+  const safeRootStyle = [
+    styles.safeArea,
+    Platform.OS !== "web" && {
+      paddingTop: insets.top,
+      paddingLeft: insets.left,
+      paddingRight: insets.right,
+    },
+  ];
 
   useEffect(() => {
     const fetchGroupDetails = async () => {
@@ -179,9 +189,19 @@ const GroupDetailsScreen = () => {
     setEditedDescription(groupData.description || "");
   };
 
+
   if (loading) {
     return (
-      <View style={globalStyles.centeredContainer}>
+      <View
+        style={[
+          globalStyles.centeredContainer,
+          Platform.OS !== "web" && {
+            paddingTop: insets.top,
+            paddingLeft: insets.left,
+            paddingRight: insets.right,
+          },
+        ]}
+      >
         <ActivityIndicator size="large" color={colors.primary} />
         <Text style={{ color: colors.textPrimary, marginTop: SPACING.medium }}>Loading group details...</Text>
       </View>
@@ -190,14 +210,23 @@ const GroupDetailsScreen = () => {
 
   if (!groupData) {
     return (
-      <View style={globalStyles.centeredContainer}>
+      <View
+        style={[
+          globalStyles.centeredContainer,
+          Platform.OS !== "web" && {
+            paddingTop: insets.top,
+            paddingLeft: insets.left,
+            paddingRight: insets.right,
+          },
+        ]}
+      >
         <Text style={globalStyles.errorText}>Group details could not be loaded.</Text> 
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <View style={safeRootStyle}>
       <ScrollView contentContainerStyle={styles.scrollViewContent}>
         {/* Header with Back Button */}
         <View style={styles.headerContainer}>
@@ -334,7 +363,7 @@ const GroupDetailsScreen = () => {
         </View>
 
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 };
 

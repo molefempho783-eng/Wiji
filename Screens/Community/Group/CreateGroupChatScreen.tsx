@@ -9,6 +9,7 @@ import {
   Image,
   ScrollView,
   Switch,
+  Platform,
 } from "react-native";
 import { useNavigation, RouteProp, useRoute } from "@react-navigation/native";
 import { StackNavigationProp } from "@react-navigation/stack";
@@ -31,6 +32,7 @@ import { RootStackParamList } from "../../../types";
 import { useTheme } from "../../context/ThemeContext";
 import createStyles from "../../context/appStyles";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const AVATAR_PLACEHOLDER = require("../../../assets/avatar-placeholder.png");
 
@@ -57,13 +59,22 @@ const CreateGroupChatScreen = () => {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-
   const navigation = useNavigation<CreateGroupChatScreenNavigationProp>();
   const route = useRoute<CreateGroupChatScreenRouteProp>();
   const { communityId } = route.params;
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const styles = createStyles(colors).createGroupChatScreen;
-  const globalStyles = createStyles(colors).global;
+
+  // Same as CommunityScreen: manual insets so content clears Dynamic Island / notch
+  const safeAreaStyle = [
+    styles.safeArea,
+    Platform.OS !== "web" && {
+      paddingTop: insets.top,
+      paddingLeft: insets.left,
+      paddingRight: insets.right,
+    },
+  ];
 
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged((currentUser) => {
@@ -72,28 +83,23 @@ const CreateGroupChatScreen = () => {
     return unsubscribe;
   }, []);
 
-  // ✅ Check if user is part of community or creator
-  const checkCommunityMembership = async (): Promise<boolean> => {
+  // Community creator can always create; members can create only when enabled by creator.
+  const checkCanCreateGroup = async (): Promise<boolean> => {
     if (!user?.uid) return false;
     try {
-      const userRef = doc(db, "users", user.uid);
-      const userSnap = await getDoc(userRef);
-      const joinedCommunities: string[] =
-        userSnap.exists() ? userSnap.data().joinedCommunities || [] : [];
-
-      if (joinedCommunities.includes(communityId)) return true;
-
-      // ✅ allow community creator
       const communityRef = doc(db, "communities", communityId);
       const communitySnap = await getDoc(communityRef);
-      if (
-        communitySnap.exists() &&
-        communitySnap.data().createdBy === user.uid
-      ) {
-        return true;
-      }
+      if (!communitySnap.exists()) return false;
+      const data = communitySnap.data();
+      if (data.createdBy === user.uid) return true;
 
-      return false;
+      if (data.allowMembersToCreateGroups !== true) return false;
+
+      const userRef = doc(db, "users", user.uid);
+      const userSnap = await getDoc(userRef);
+      if (!userSnap.exists()) return false;
+      const joinedCommunities = userSnap.data().joinedCommunities || [];
+      return Array.isArray(joinedCommunities) && joinedCommunities.includes(communityId);
     } catch (error) {
       console.error("Error checking membership:", error);
       return false;
@@ -166,12 +172,14 @@ const CreateGroupChatScreen = () => {
       }
     }
 
-
     setLoading(true);
     try {
-      const isMember = await checkCommunityMembership();
-      if (!isMember) {
-        Alert.alert("Permission Denied", "You must be a community member.");
+      const canCreate = await checkCanCreateGroup();
+      if (!canCreate) {
+        Alert.alert(
+          "Permission Denied",
+          "You are not allowed to create groups in this community."
+        );
         return;
       }
 
@@ -219,6 +227,7 @@ const CreateGroupChatScreen = () => {
   };
 
   return (
+    <View style={safeAreaStyle}>
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 50 }}>
       <Text style={styles.title}>Create New Group Chat</Text>
 
@@ -341,6 +350,7 @@ const CreateGroupChatScreen = () => {
         {loading ? <ActivityIndicator color={colors.buttonText} /> : <Text style={styles.createButtonText}>Create Group</Text>}
       </TouchableOpacity>
     </ScrollView>
+    </View>
   );
 };
 

@@ -3,6 +3,7 @@ import {
   View,
   Text,
   TouchableOpacity,
+  Pressable,
   FlatList,
   Alert,
   ActivityIndicator,
@@ -58,6 +59,7 @@ const CommunityDetailScreen = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [joining, setJoining] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showCreateGroupHint, setShowCreateGroupHint] = useState(false);
 
   const navigation = useNavigation<CommunityDetailScreenNavigationProp>();
   const { colors } = useTheme();
@@ -66,6 +68,8 @@ const CommunityDetailScreen = () => {
   const globalStyles = createStyles(colors).global;
 
   const isCreator = !!uid && communityData.createdBy === uid;
+  const canCreateGroup =
+    isCreator || (!!isMember && communityData.allowMembersToCreateGroups === true);
 
   // Track auth
   useEffect(() => {
@@ -259,8 +263,13 @@ const CommunityDetailScreen = () => {
   ];
 
   return (
-    <ScrollView 
-      contentContainerStyle={contentStyle}
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+    <ScrollView
+      contentContainerStyle={[
+        contentStyle,
+        // Keep content clear of floating create-group button.
+        canCreateGroup && { paddingBottom: 110 },
+      ]}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
@@ -327,6 +336,7 @@ const CommunityDetailScreen = () => {
             height: styles.communityLogo.height,
             borderRadius: styles.communityLogo.width / 2,
             backgroundColor: colors.primaryLight,
+            alignSelf: 'center',
             alignItems: 'center',
             justifyContent: 'center',
           }}
@@ -455,20 +465,65 @@ const CommunityDetailScreen = () => {
             <Text style={styles.noGroupsText}>No group chats available.</Text>
           )}
 
-          {/* ✅ Create Group Button */}
-          <TouchableOpacity
-            style={styles.saveButton}
-            onPress={() =>
-              navigation.navigate("CreateGroupChatScreen", {
-                communityId: communityData.id,
-              })
-            }
-          >
-            <Text style={styles.saveButtonText}>+ Create Group Chat</Text>
-          </TouchableOpacity>
         </>
       )}
     </ScrollView>
+    {canCreateGroup && showCreateGroupHint && (
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          right: 92,
+          bottom: insets.bottom + 40,
+          backgroundColor: colors.cardBackground,
+          borderWidth: 1,
+          borderColor: colors.borderColor,
+          borderRadius: 8,
+          paddingHorizontal: 10,
+          paddingVertical: 6,
+          zIndex: 1000,
+          elevation: 13,
+        }}
+      >
+        <Text style={{ color: colors.textPrimary, fontSize: FONT_SIZES.small }}>
+          {isCreator ? "Create group chat" : "Create group in this community"}
+        </Text>
+      </View>
+    )}
+    {canCreateGroup && (
+      <Pressable
+        style={{
+          position: "absolute",
+          width: 60,
+          height: 60,
+          borderRadius: 30,
+          right: 20,
+          bottom: insets.bottom + 24,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: colors.primary,
+          elevation: 12,
+          shadowColor: colors.shadowColor,
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.5,
+          shadowRadius: 15,
+          zIndex: 999,
+        }}
+        onPress={() => {
+          setShowCreateGroupHint(false);
+          navigation.navigate("CreateGroupChatScreen", {
+            communityId: communityData.id,
+          });
+        }}
+        onLongPress={() => setShowCreateGroupHint(true)}
+        onPressOut={() => setShowCreateGroupHint(false)}
+        onHoverIn={() => setShowCreateGroupHint(true)}
+        onHoverOut={() => setShowCreateGroupHint(false)}
+      >
+        <Ionicons name="add" size={32} color={colors.buttonText} />
+      </Pressable>
+    )}
+    </View>
   );
 };
 

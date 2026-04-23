@@ -32,6 +32,8 @@ const AuthScreen = () => {
   const [error, setError] = useState("");
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [acceptedPrivacy, setAcceptedPrivacy] = useState(false);
   const navigation = useNavigation<AuthScreenNavigationProp>();
   const insets = useSafeAreaInsets();
   
@@ -43,6 +45,10 @@ const AuthScreen = () => {
       if (isSignup) {
         if (!username.trim()) {
           setError("Username is required.");
+          return;
+        }
+        if (!acceptedTerms || !acceptedPrivacy) {
+          setError("You must accept the Terms and Privacy Policy to sign up.");
           return;
         }
         if (password.length < 6) {
@@ -58,6 +64,9 @@ const AuthScreen = () => {
           email,
           uid: user.uid,
           createdAt: new Date(),
+          termsAcceptedAt: new Date(),
+          privacyAcceptedAt: new Date(),
+          legalPolicyVersion: "2026-04-22",
         });
 
         Alert.alert("Success", "Account created successfully!");
@@ -229,6 +238,34 @@ const AuthScreen = () => {
                 </>
               ) : (
                 <>
+                  {isSignup && (
+                    <View style={styles.legalContainer}>
+                      <View style={styles.legalRow}>
+                        <TouchableOpacity onPress={() => setAcceptedTerms((prev) => !prev)}>
+                          <View style={[styles.checkbox, acceptedTerms && styles.checkboxChecked]}>
+                            {acceptedTerms ? <Text style={styles.checkboxMark}>X</Text> : null}
+                          </View>
+                        </TouchableOpacity>
+                        <Text style={styles.legalText}>I agree to the </Text>
+                        <TouchableOpacity onPress={() => navigation.navigate("TermsAndConditionsScreen")}>
+                          <Text style={styles.legalLink}>Terms and Conditions</Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      <View style={styles.legalRow}>
+                        <TouchableOpacity onPress={() => setAcceptedPrivacy((prev) => !prev)}>
+                          <View style={[styles.checkbox, acceptedPrivacy && styles.checkboxChecked]}>
+                            {acceptedPrivacy ? <Text style={styles.checkboxMark}>X</Text> : null}
+                          </View>
+                        </TouchableOpacity>
+                        <Text style={styles.legalText}>I agree to the </Text>
+                        <TouchableOpacity onPress={() => navigation.navigate("PrivacyPolicyScreen")}>
+                          <Text style={styles.legalLink}>Privacy Policy</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  )}
+
                   <TouchableOpacity style={{ width: "100%", marginBottom: 20 }} onPress={handleAuth}>
                     <LinearGradient colors={["#9C3FE4", "#C65647"]} style={{ borderRadius: 15, paddingVertical: 15, alignItems: "center" }}>
                       <Text style={{ color: "#FFFFFF", fontSize: 17, fontWeight: "bold" }}>{isSignup ? "Sign Up" : "Login"}</Text>
@@ -287,7 +324,51 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 10,
     color: '#000', 
-  }
+  },
+  legalContainer: {
+    width: "100%",
+    marginBottom: 16,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+  },
+  legalRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    marginBottom: 8,
+  },
+  checkbox: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 8,
+    marginTop: 1,
+  },
+  checkboxChecked: {
+    backgroundColor: "#9C3FE4",
+    borderColor: "#9C3FE4",
+  },
+  checkboxMark: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 11,
+    lineHeight: 12,
+  },
+  legalText: {
+    color: "#E5E7EB",
+    fontSize: 13,
+  },
+  legalLink: {
+    color: "#7CC4FF",
+    fontSize: 13,
+    textDecorationLine: "underline",
+  },
 });
 
 export default AuthScreen;

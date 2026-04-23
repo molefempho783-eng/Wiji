@@ -44,9 +44,9 @@ const onboardingData: OnboardingSlide[] = [
   },
   {
     id: "3",
-    icon: "map",
-    title: "Activities & Memories",
-    description: "Create or join activities on the map, add memories with photos, and chat with everyone in the activity.",
+    icon: "chatbubbles",
+    title: "Groups & chats",
+    description: "Create groups inside communities, chat with members, and keep conversations organized.",
   },
   {
     id: "4",

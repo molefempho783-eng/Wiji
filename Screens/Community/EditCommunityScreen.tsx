@@ -10,6 +10,7 @@ import {
   ScrollView,
   FlatList,
   SafeAreaView,
+  Switch,
 } from "react-native";
 import { RouteProp, useRoute, useNavigation } from "@react-navigation/native";
 import { StackNavigationProp } from "@react-navigation/stack";
@@ -55,6 +56,9 @@ const EditCommunityScreen = () => {
   );
   const [loading, setLoading] = useState(false);
   const [isPickingImage, setIsPickingImage] = useState(false);
+  const [allowMembersToCreateGroups, setAllowMembersToCreateGroups] = useState(
+    community.allowMembersToCreateGroups ?? true
+  );
   const [groupChats, setGroupChats] = useState<
     { id: string; name: string; profilePic?: string }[]
   >([]);
@@ -303,6 +307,7 @@ navigation.navigate("Tabs", { screen: "CommunityScreen" });
       await updateDoc(communityRef, {
         name: trimmedName,
         description: description.trim(),
+        allowMembersToCreateGroups,
         logo: newLogoURL,
       });
       Alert.alert("Success", "Community updated successfully!");
@@ -410,6 +415,31 @@ navigation.navigate("Tabs", { screen: "CommunityScreen" });
           multiline
           editable={!loading}
         />
+
+        <View
+          style={{
+            width: "100%",
+            marginBottom: 16,
+            padding: 12,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: colors.borderColor,
+            backgroundColor: colors.cardBackground,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <View style={{ flex: 1, paddingRight: 10 }}>
+            <Text style={{ color: colors.text, fontSize: 15, fontWeight: "600" }}>
+              Allow members to create groups
+            </Text>
+            <Text style={{ color: colors.textSecondary, marginTop: 4, fontSize: 13 }}>
+              Community members can create group chats when this is enabled.
+            </Text>
+          </View>
+          <Switch value={allowMembersToCreateGroups} onValueChange={setAllowMembersToCreateGroups} />
+        </View>
 
         <TouchableOpacity
           style={styles.saveButton}

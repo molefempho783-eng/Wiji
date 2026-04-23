@@ -8,7 +8,6 @@ import {
   ActivityIndicator,
   TextInput,
   Image,
-  Alert,
   RefreshControl,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -25,11 +24,8 @@ import {
   query,
   getDoc,
   getDocs,
-  orderBy,
   updateDoc,
-  limit,
   arrayUnion,
-  writeBatch,
 } from "firebase/firestore";
 import { db, auth } from "../../firebaseConfig";
 import { useAuth } from "../../AuthContext";
@@ -81,8 +77,6 @@ const UsersScreen = () => {
   ]);
 
   const [users, setUsers] = useState<UserRow[]>([]);
-  const [friends, setFriends] = useState<UserRow[]>([]);
-  const [friendRequests, setFriendRequests] = useState<Set<string>>(new Set()); // Users who sent friend requests to current user
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -178,32 +172,6 @@ const UsersScreen = () => {
       fetchCurrentUserProfile();
     }, [fetchCurrentUserProfile])
   );
-
-  /** 🔄 Load friends from user document */
-  useEffect(() => {
-    if (!currentUser) return;
-
-    const userRef = doc(db, "users", currentUser.uid);
-    const unsub = onSnapshot(userRef, (snap) => {
-      if (snap.exists()) {
-        const friendsData = snap.data().friends;
-        let friendsList: string[] = [];
-        
-        // Handle both array (legacy) and map (new) formats
-        if (Array.isArray(friendsData)) {
-          friendsList = friendsData;
-        } else if (friendsData && typeof friendsData === 'object') {
-          // Map format: { [userId]: true }
-          friendsList = Object.keys(friendsData).filter(uid => friendsData[uid] === true);
-        }
-        
-        const friendsDataList = users.filter((u) => friendsList.includes(u.id));
-        setFriends(friendsDataList);
-      }
-    });
-
-    return unsub;
-  }, [currentUser, users]);
 
   /** Chats list from user doc chatIds + per-chat-doc listeners (does not rely on collection query) */
   const [chatDocsByChatId, setChatDocsByChatId] = useState<Record<string, ConversationRow>>({});
@@ -311,36 +279,11 @@ const UsersScreen = () => {
     setPreviewByUser(previews);
   }, [chatDocsByChatId]);
 
-  /** Friend requests (from first-message check) — run once when we have chat docs */
-  useEffect(() => {
-    if (!currentUser || Object.keys(chatDocsByChatId).length === 0) return;
-    const requestSenderIds = new Set<string>();
-    (async () => {
-      try {
-        const friendsUserRef = doc(db, "users", currentUser.uid);
-        const friendsUserSnap = await getDoc(friendsUserRef);
-        const friendsData = friendsUserSnap.exists() ? friendsUserSnap.data()?.friends ?? null : null;
-        let friendsList: string[] = [];
-        if (Array.isArray(friendsData)) friendsList = friendsData;
-        else if (friendsData && typeof friendsData === "object") friendsList = Object.keys(friendsData).filter((uid) => friendsData[uid] === true);
-        const chatIds = Object.keys(chatDocsByChatId);
-        for (const chatId of chatIds) {
-          const row = chatDocsByChatId[chatId];
-          if (!row || friendsList.includes(row.otherId)) continue;
-          try {
-            const messagesRef = collection(db, "chats", chatId, "messages");
-            const messagesSnap = await getDocs(query(messagesRef, orderBy("createdAt", "asc"), limit(1)));
-            if (messagesSnap.docs.length > 0) {
-              const firstMessage = messagesSnap.docs[0].data();
-              const firstSenderId = firstMessage.senderId || firstMessage.senderUid;
-              if (firstSenderId === row.otherId) requestSenderIds.add(row.otherId);
-            }
-          } catch (_) {}
-        }
-        setFriendRequests(requestSenderIds);
-      } catch (_) {}
-    })();
-  }, [currentUser, Object.keys(chatDocsByChatId).sort().join(",")]);
+  /** Friends tab = people with existing chat history */
+  const friends = useMemo(() => {
+    const ids = new Set(conversations.map((row) => row.otherId));
+    return users.filter((u) => ids.has(u.id));
+  }, [users, conversations]);
 
   /** 🔍 Search filter logic */
   const filteredList = (base: UserRow[]) => {
@@ -364,7 +307,7 @@ const exploreUsers = useMemo(() => {
 
   // Debug logging
   if (__DEV__) {
-    console.log(`Explore tab: ${filtered.length} users (out of ${users.length} total, ${friends.length} friends)`);
+    console.log(`Explore tab: ${filtered.length} users (out of ${users.length} total, ${friends.length} with chat history)`);
   }
 
   // Apply search
@@ -460,48 +403,8 @@ const exploreUsers = useMemo(() => {
     );
   };
 
-  /** Normalize friends field (array or map or missing) to a map { [uid]: true } for safe writes */
-  const friendsToMap = (data: { friends?: unknown } | null | undefined): Record<string, boolean> => {
-    if (!data?.friends) return {};
-    const f = data.friends;
-    if (Array.isArray(f)) return Object.fromEntries((f as string[]).map((id) => [id, true]));
-    if (typeof f === "object" && f !== null)
-      return Object.fromEntries(
-        Object.entries(f as Record<string, unknown>).filter(([, v]) => v === true).map(([k]) => [k, true])
-      );
-    return {};
-  };
-
-  /** ✅ Accept friend request — read-modify-write both docs as maps, batch so both succeed or both fail */
-  const handleAcceptFriend = async (userId: string) => {
-    if (!currentUser) return;
-    try {
-      const currentUserRef = doc(db, "users", currentUser.uid);
-      const otherUserRef = doc(db, "users", userId);
-      const [currentSnap, otherSnap] = await Promise.all([getDoc(currentUserRef), getDoc(otherUserRef)]);
-
-      const myFriends = friendsToMap(currentSnap.exists() ? currentSnap.data() : null);
-      const theirFriends = friendsToMap(otherSnap.exists() ? otherSnap.data() : null);
-      const myNew = { ...myFriends, [userId]: true };
-      const theirNew = { ...theirFriends, [currentUser.uid]: true };
-
-      const batch = writeBatch(db);
-      batch.update(currentUserRef, { friends: myNew });
-      batch.update(otherUserRef, { friends: theirNew });
-      await batch.commit();
-
-      Alert.alert("Success", "Friend request accepted!");
-    } catch (error: any) {
-      console.error("Error accepting friend:", error);
-      console.error("Error details:", error.code, error.message);
-      console.error("Accept friend request failed:", error.message || error.code);
-    }
-  };
-
-  /** 🧩 Render explore user row (with accept button if friend request sent) */
+  /** 🧩 Render explore user row */
   const renderExploreRow = ({ item }: { item: UserRow }) => {
-    const isFriend = friends.some(f => f.id === item.id);
-    const hasSentRequest = friendRequests.has(item.id);
     const unreadBool = !!unreadByUser[item.id];
     const count = unreadCountByUser[item.id];
     const unreadCount = typeof count === "number" ? count : (unreadBool ? 1 : 0);
@@ -552,25 +455,6 @@ const exploreUsers = useMemo(() => {
           </View>
         )}
 
-        {!isFriend && hasSentRequest && (
-          <TouchableOpacity
-            style={{
-              backgroundColor: colors.primary,
-              paddingHorizontal: 16,
-              paddingVertical: 8,
-              borderRadius: 8,
-              marginLeft: 8,
-            }}
-            onPress={(e) => {
-              e.stopPropagation();
-              handleAcceptFriend(item.id);
-            }}
-          >
-            <Text style={{ color: colors.buttonText || '#fff', fontWeight: '600' }}>
-              Accept Friend request
-            </Text>
-          </TouchableOpacity>
-        )}
       </TouchableOpacity>
     );
   };
@@ -580,7 +464,7 @@ const exploreUsers = useMemo(() => {
     <View style={{ flex: 1 }}>
       <TextInput
         style={styles.searchBar}
-        placeholder="Search friends..."
+        placeholder="Search chats..."
         placeholderTextColor={colors.placeholderText as string}
         value={searchQuery}
         onChangeText={setSearchQuery}
@@ -597,7 +481,7 @@ const exploreUsers = useMemo(() => {
           renderItem={renderRow}
           ListEmptyComponent={
             <Text style={styles.noResultsText}>
-              No friends yet. Send a message to someone to send a friend request!
+              No chats yet. Start a chat from Explore to see people here.
             </Text>
           }
           refreshControl={

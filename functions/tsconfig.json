@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "noEmit": false,
     "target": "ES2022",
     "lib": [
       "ES2022"
@@ -19,5 +20,6 @@
   "exclude": [
     "node_modules",
     "**/__tests__/*"
-  ]
+  ],
+  "extends": "expo/tsconfig.base"
 }

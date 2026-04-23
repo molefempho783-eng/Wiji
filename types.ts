@@ -4,12 +4,16 @@ import { Timestamp } from 'firebase/firestore';
 export type RootStackParamList = {
     OnboardingScreen: undefined;
     AuthScreen: undefined;
+    TermsAndConditionsScreen: undefined;
+    PrivacyPolicyScreen: undefined;
     CommunityScreen: undefined;
     CommunityDetailScreen: { community: Community };
     CreateCommunityScreen: undefined;
     GroupChatScreen: { groupId: string; groupName: string; communityId: string };
     ActivityChatScreen: { activityId: string; activityTitle: string };
     ActivityDetailScreen: { activityId: string };
+    /** Add a map pin deal; optional coords bias autocomplete (from map) */
+    CreateMapSpecialScreen: { latitude?: number; longitude?: number };
     ChatRoomScreen: { chatId: string; recipientId: string };
     UserProfileScreen: { userId: string };
     ProfileScreen: undefined;    // ← add this
@@ -17,7 +21,6 @@ export type RootStackParamList = {
     EditCommunityScreen: { community: Community };
     CreateGroupChatScreen: { communityId: string };
     GroupDetailsScreen: { groupId: string; groupName: string; communityId: string };
-  GroupWalletScreen: { groupId: string; groupName: string; communityId: string };
 
   Tabs: {
     screen?:
@@ -77,12 +80,13 @@ EditBusinessScreen: {
 
 };
 
-
 export type Community = {
   id: string;
   name: string;
   description?: string;
   logo?: string;
+  /** Community owner can allow members to create group chats */
+  allowMembersToCreateGroups?: boolean;
   createdBy: string;
   createdAt: any; 
   location?: string;
