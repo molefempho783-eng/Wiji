@@ -1041,7 +1041,7 @@ const handlePickFile = async () => {
       const fileUri = `${FileSystem.documentDirectory}${fileName}`;
       const downloadRes = await FileSystem.downloadAsync(media.uri, fileUri);
       const asset = await MediaLibrary.createAssetAsync(downloadRes.uri);
-      await MediaLibrary.createAlbumAsync("Dsquare Media", asset, false);
+      await MediaLibrary.createAlbumAsync("Tapza Media", asset, false);
       Alert.alert("Downloaded", "Saved to your gallery 🎉");
     } catch (error: any) {
       console.error("Download failed:", error.message);

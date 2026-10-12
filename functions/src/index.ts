@@ -2758,28 +2758,28 @@ export const resetPassword = onCall(
         });
 
         const mailOptions = {
-          from: `"Square" <${emailUser}>`,
+          from: `"Tapza" <${emailUser}>`,
           to: emailLower,
-          subject: 'Square - Your New Password',
+          subject: 'Tapza - Your New Password',
           html: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
               <h2 style="color: #9C3FE4;">Password Reset Request</h2>
               <p>Hello,</p>
-              <p>A new password has been generated for your Square account.</p>
+              <p>A new password has been generated for your Tapza account.</p>
               <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0; text-align: center;">
                 <p style="margin: 0; font-size: 20px; font-weight: bold; color: #333; letter-spacing: 3px; font-family: monospace;">${newPassword}</p>
               </div>
               <p><strong>Please log in with this new password and change it to something memorable after logging in.</strong></p>
               <p>If you did not request this password reset, please contact support immediately.</p>
               <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-              <p style="color: #666; font-size: 12px;">This is an automated message from Square. Please do not reply to this email.</p>
+              <p style="color: #666; font-size: 12px;">This is an automated message from Tapza. Please do not reply to this email.</p>
             </div>
           `,
           text: `Password Reset Request
 
 Hello,
 
-A new password has been generated for your Square account.
+A new password has been generated for your Tapza account.
 
 Your new password is: ${newPassword}
 
@@ -2788,7 +2788,7 @@ Please log in with this new password and change it to something memorable after 
 If you did not request this password reset, please contact support immediately.
 
 ---
-This is an automated message from Square. Please do not reply to this email.`,
+This is an automated message from Tapza. Please do not reply to this email.`,
         };
 
         await emailTransporter.sendMail(mailOptions);

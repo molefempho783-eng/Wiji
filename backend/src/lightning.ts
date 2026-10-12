@@ -47,7 +47,7 @@ export async function createInvoiceSats(amountSats: number, memo?: string) {
   const client = ensureLnd();
   const body: Record<string, string | boolean> = {
     value: amountSats.toString(),
-    memo: memo ?? "Square Lightning invoice",
+    memo: memo ?? "Tapza Lightning invoice",
   };
   if (LND_PRIVATE_INVOICES) {
     body.private = true;

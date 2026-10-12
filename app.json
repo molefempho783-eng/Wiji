@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "Square (no wallet)",
+    "name": "Tapza",
     "slug": "dsquare4-0",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/logo.png",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "scheme": "square",
@@ -20,19 +20,21 @@
         "googleMapsApiKey": "AIzaSyDR5JhBnTT53KmUwNQI6QcWG5RjY5sdYRM"
       },
       "infoPlist": {
-        "NSCameraUsageDescription": "Allow Square to scan QR codes to send money.",
-        "NSMicrophoneUsageDescription": "Allow Square to use your microphone during voice calls.",
-        "NSLocationWhenInUseUsageDescription": "Allow Square to access your location to set pickup and destination on the map.",
+        "NSCameraUsageDescription": "Allow Tapza to scan QR codes to send money.",
+        "NSMicrophoneUsageDescription": "Allow Tapza to use your microphone during voice calls.",
+        "NSLocationWhenInUseUsageDescription": "Allow Tapza to access your location to set pickup and destination on the map.",
         "ITSAppUsesNonExemptEncryption": false,
-        "NSDocumentTypes": ["public.item", "public.data"]
-
+        "NSDocumentTypes": [
+          "public.item",
+          "public.data"
+        ]
       }
     },
     "android": {
       "package": "com.mpho.dsquare",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/logo.png",
-        "backgroundColor": "#ffffff"
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#6C2BD9"
       },
       "config": {
         "googleMaps": {
@@ -59,20 +61,20 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Square to scan QR codes to send money."
+          "cameraPermission": "Allow Tapza to scan QR codes to send money."
         }
       ],
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Allow Square to access your location to set pickup and destination on the map."
+          "locationWhenInUsePermission": "Allow Tapza to access your location to set pickup and destination on the map."
         }
       ],
       [
         "expo-notifications",
         {
-          "icon": "./assets/logo.png",
-          "color": "#ffffff",
+          "icon": "./assets/notification-icon.png",
+          "color": "#6C2BD9",
           "mode": "production"
         }
       ],

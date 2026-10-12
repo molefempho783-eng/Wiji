@@ -62,7 +62,7 @@ export function createLightningRouter() {
 
       // Keep memo short so BOLT11 stays compact and easier to scan as QR.
       const cleanLabel = typeof label === "string" ? label.trim() : "";
-      const memo = cleanLabel ? `Square ${cleanLabel}`.slice(0, 40) : "Square receive";
+      const memo = cleanLabel ? `Tapza ${cleanLabel}`.slice(0, 40) : "Tapza receive";
       const { invoice } = await createInvoiceSats(amount, memo);
       return res.json({ invoice });
     } catch (err) {
@@ -177,7 +177,7 @@ export function createLightningRouter() {
       }
 
       const cleanLabel = typeof label === "string" ? label.trim() : "";
-      const memo = cleanLabel ? `Square swap-in ${cleanLabel}`.slice(0, 40) : "Square swap-in";
+      const memo = cleanLabel ? `Tapza swap-in ${cleanLabel}`.slice(0, 40) : "Tapza swap-in";
       const { invoice } = await createInvoiceSats(sats, memo);
       const swap = await createBoltzSubmarineSwap(invoice);
       if (!swap?.id || !swap?.address) {
@@ -243,7 +243,7 @@ export function createLightningRouter() {
       // Create invoice for receiver for totalAmount
       const { invoice } = await createInvoiceSats(
         totalAmount,
-        `Square send-to-username ${senderKey}->${receiverKey}`
+        `Tapza send-to-username ${senderKey}->${receiverKey}`
       );
 
       // Pay the invoice from node wallet (this is node funds; you can extend with accounting)

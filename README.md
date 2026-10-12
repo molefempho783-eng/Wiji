@@ -1,4 +1,4 @@
-# Square (Bitcoin / Crypto)
+# Tapza (Bitcoin / Crypto)
 
 Expo (React Native) app with Firebase backend (Firestore, Storage, Cloud Functions).
 
