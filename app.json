@@ -21,6 +21,7 @@
       },
       "infoPlist": {
         "NSCameraUsageDescription": "Allow Square to scan QR codes to send money.",
+        "NSMicrophoneUsageDescription": "Allow Square to use your microphone during voice calls.",
         "NSLocationWhenInUseUsageDescription": "Allow Square to access your location to set pickup and destination on the map.",
         "ITSAppUsesNonExemptEncryption": false,
         "NSDocumentTypes": ["public.item", "public.data"]

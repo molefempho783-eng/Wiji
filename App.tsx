@@ -37,6 +37,8 @@ import MapScreen from "./Screens/Map/MapScreen";
 import ActivityChatScreen from "./Screens/Map/ActivityChatScreen";
 import ActivityDetailScreen from "./Screens/Map/ActivityDetailScreen";
 import CreateMapSpecialScreen from "./Screens/Map/CreateMapSpecialScreen";
+import WalletCampaignScreen from "./Screens/Wallet/WalletCampaignScreen";
+import CallScreen from "./Screens/Calls/CallScreen";
 import { registerForPushNotificationsAsync, savePushTokenToUser } from './hooks/useRegisterPushToken';
 import { primeKlipyKeyFromFirebase } from './services/klipy';
 import { LogBox } from 'react-native';
@@ -153,6 +155,8 @@ const TabsNavigator = () => {
           if (route.name === "CommunityScreen") iconName = "people-outline";
           else if (route.name === "UserScreen") iconName = "person-outline";
           else if (route.name === "MapScreen") iconName = "map-outline";
+          else if (route.name === "WalletScreen") iconName = "wallet-outline";
+          else if (route.name === "CallScreen") iconName = "call-outline";
           return <Ionicons name={iconName} size={size + 4} color={color} />;
         },
       })}
@@ -166,6 +170,8 @@ const TabsNavigator = () => {
         }}
       />
       <Tab.Screen name="MapScreen" component={MapScreen} />
+      <Tab.Screen name="CallScreen" component={CallScreen} />
+      <Tab.Screen name="WalletScreen" component={WalletCampaignScreen} />
     </Tab.Navigator>
   );
 };
@@ -310,6 +316,10 @@ const MainNavigator = () => {
           groupName: (data.groupName as string) || 'Group',
           communityId: data.communityId as string,
         });
+      }
+    } else if (data?.type === 'call') {
+      if (navigationRef.current) {
+        navigationRef.current.navigate('Tabs', { screen: 'CallScreen' } as never);
       }
     }
   };

@@ -1290,6 +1290,93 @@ export const notifyBuyerOrderStatus = onDocumentUpdated('orders/{orderId}', asyn
   }
 });
 
+export const notifyIncomingCall = onDocumentCreated('callSessions/{callId}', async (event) => {
+  const callId = event.params.callId;
+  const call = event.data?.data() as any;
+  if (!call) return;
+  if (call.status !== 'ringing') return;
+
+  const callerId = String(call.callerId || '');
+  const calleeId = String(call.calleeId || '');
+  if (!callerId || !calleeId || callerId === calleeId) return;
+
+  try {
+    const [callerSnap, calleeSnap] = await Promise.all([
+      db.collection('users').doc(callerId).get(),
+      db.collection('users').doc(calleeId).get(),
+    ]);
+    if (!calleeSnap.exists) return;
+
+    const callerName = callerSnap.get('username') || 'Someone';
+    const fcmTokens: string[] = (calleeSnap.get('fcmTokens') || []).filter(
+      (t: any) => typeof t === 'string' && t.length > 0
+    );
+    const expoTokens: string[] = (calleeSnap.get('expoPushTokens') || []).filter(
+      (t: any) => typeof t === 'string' && t.startsWith('ExponentPushToken')
+    );
+    const tokens = fcmTokens.length > 0 ? fcmTokens : expoTokens;
+    if (!tokens.length) return;
+
+    await sendFCMPush(tokens, 'Incoming call', `${callerName} is calling you`, {
+      type: 'call',
+      callId,
+      callerId,
+      calleeId,
+    });
+  } catch (e) {
+    logger.warn('notifyIncomingCall failed', e);
+  }
+});
+
+export const expireRingingCalls = onSchedule('every 1 minutes', async () => {
+  const now = Timestamp.now();
+  const stale = await db
+    .collection('callSessions')
+    .where('status', '==', 'ringing')
+    .where('ttlExpiresAt', '<=', now)
+    .get();
+
+  if (stale.empty) return;
+
+  for (const docSnap of stale.docs) {
+    const call = docSnap.data() as any;
+    const callerId = String(call.callerId || '');
+    const calleeId = String(call.calleeId || '');
+
+    await docSnap.ref.set(
+      {
+        status: 'missed',
+        endReason: 'timeout_no_answer',
+        endedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    if (!callerId || !calleeId) continue;
+    try {
+      const callerSnap = await db.collection('users').doc(callerId).get();
+      const calleeSnap = await db.collection('users').doc(calleeId).get();
+      const fcmTokens: string[] = (callerSnap.get('fcmTokens') || []).filter(
+        (t: any) => typeof t === 'string' && t.length > 0
+      );
+      const expoTokens: string[] = (callerSnap.get('expoPushTokens') || []).filter(
+        (t: any) => typeof t === 'string' && t.startsWith('ExponentPushToken')
+      );
+      const tokens = fcmTokens.length > 0 ? fcmTokens : expoTokens;
+      if (!tokens.length) continue;
+      const calleeName = calleeSnap.get('username') || 'User';
+      await sendFCMPush(tokens, 'Call missed', `${calleeName} did not answer`, {
+        type: 'call_missed',
+        callId: docSnap.id,
+        calleeId,
+      });
+    } catch (e) {
+      logger.warn('expireRingingCalls notify caller failed', e);
+    }
+  }
+});
+
 // ---------- [MODIFIED] Notify on new DM message & maintain chat meta ----------
 export const notifyOnNewDM = onDocumentCreated('chats/{chatId}/messages/{messageId}', async (event) => {
   const chatId = event.params.chatId;

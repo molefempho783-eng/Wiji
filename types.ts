@@ -27,7 +27,9 @@ export type RootStackParamList = {
       | "CommunityScreen"
       | "UserScreen"
       | "BusinessesScreen"
-      | "MapScreen";
+      | "MapScreen"
+      | "CallScreen"
+      | "WalletScreen";
   };
 
     // NEW SCREENS FOR BUSINESSES
