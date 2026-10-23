@@ -137,12 +137,6 @@ const EditCommunityScreen = () => {
                 await deleteObject(picRef);
               } catch {}
 
-              // Delete group wallet (if any)
-              const walletRef = doc(db, "groupWallets", groupId);
-              try {
-                await deleteDoc(walletRef);
-              } catch {}
-
               // Delete group document
               await deleteDoc(groupRef);
 
@@ -202,11 +196,6 @@ const EditCommunityScreen = () => {
                 const groupPicPath = `group_chats/${community.id}/${groupId}.jpg`;
                 try {
                   await deleteObject(ref(storage, groupPicPath));
-                } catch {}
-
-                // Delete group wallet if exists
-                try {
-                  await deleteDoc(doc(db, "groupWallets", groupId));
                 } catch {}
 
                 // Delete group chat doc

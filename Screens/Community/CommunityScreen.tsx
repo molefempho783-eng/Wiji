@@ -1,5 +1,6 @@
 // Screens/Communities/CommunityScreen.tsx
-import React, { useEffect, useState, useMemo, useCallback } from "react";
+import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import CoachTour from "../../components/CoachTour";
 import {
   View,
   Text,
@@ -66,7 +67,6 @@ const CommunityScreen = () => {
   // Cache key for communities
   const COMMUNITIES_CACHE_KEY = "cached_communities";
   const COMMUNITIES_CACHE_TIMESTAMP_KEY = "cached_communities_timestamp";
-  const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
   // Helper: Load from cache
   const loadFromCache = async (): Promise<CommunityListItem[] | null> => {
@@ -76,12 +76,8 @@ const CommunityScreen = () => {
         AsyncStorage.getItem(COMMUNITIES_CACHE_TIMESTAMP_KEY),
       ]);
       
-      if (cachedData && timestamp) {
-        const cacheAge = Date.now() - parseInt(timestamp, 10);
-        if (cacheAge < CACHE_DURATION) {
-          return JSON.parse(cachedData);
-        }
-      }
+      // Always show what we have (even if old); the live listener updates it straight after
+      if (cachedData) return JSON.parse(cachedData);
     } catch (err) {
       console.error("Error loading from cache:", err);
     }
@@ -100,97 +96,65 @@ const CommunityScreen = () => {
     }
   };
 
-  // Helper: Fetch with timeout and retry
-  const fetchWithTimeout = async (timeoutMs: number = 8000) => {
-    const fetchPromise = getDocs(collection(db, "communities"));
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Request timeout")), timeoutMs)
-    );
-    return Promise.race([fetchPromise, timeoutPromise]);
-  };
-
-  // Fetch communities function (reusable for refresh)
-  const fetchCommunities = useCallback(async (skipCache: boolean = false) => {
-    if (!skipCache) {
-      setLoading(true);
-    }
-    setError(null);
-    
-    // Try to load from cache first for instant display (unless refreshing)
-    let cached: CommunityListItem[] | null = null;
-    if (!skipCache) {
-      cached = await loadFromCache();
-      if (cached) {
-        setCommunities(cached);
-        const categoriesSet = new Set<string>();
-        cached.forEach(community => {
-          (community.categories || []).forEach(cat => categoriesSet.add(cat));
-        });
-        setAllCategories(Array.from(categoriesSet).sort());
-        setLoading(false);
-      }
-    }
-
-    // Then fetch fresh data in background
-    try {
-      const snapshot = await fetchWithTimeout(8000) as any;
-      const results: CommunityListItem[] = [];
-      const categoriesSet = new Set<string>();
-      
-      snapshot.forEach((docSnap: any) => {
-        const data = docSnap.data();
-        const categories: string[] = data.categories || [];
-        categories.forEach(cat => categoriesSet.add(cat));
-        results.push({
-          id: docSnap.id,
-          name: data.name || "Unnamed Community",
-          description: data.description || "",
-          logo: data.logo || undefined,
-          createdBy: data.createdBy,
-          createdAt: data.createdAt,
-          location: data.location || undefined, 
-          categories: categories, 
-        });
-      });
-      
-      results.sort((a, b) => a.name.localeCompare(b.name));
-      setCommunities(results);
-      await saveToCache(results);
-
-      const sortedCategories = Array.from(categoriesSet).sort();
-      setAllCategories(sortedCategories);
-
-      setLoading(false);
-      setRefreshing(false);
-    } catch (err: any) {
-      // Only log error if we don't have cached data
-      if (!cached) {
-        console.error("Error fetching communities:", err);
-      }
-      
-      // If we have cached data, show it even if fetch failed (silently)
-      if (cached && !skipCache) {
-        // Don't show error if we have cached data - it's working fine
-        setError(null);
-      } else {
-        console.error("Failed to load communities:", err);
-        setError(null);
-        setLoading(false);
-      }
-      setRefreshing(false);
-    }
+  const applyCommunities = useCallback((list: CommunityListItem[]) => {
+    setCommunities(list);
+    const categoriesSet = new Set<string>();
+    list.forEach((community) => (community.categories || []).forEach((cat) => categoriesSet.add(cat)));
+    setAllCategories(Array.from(categoriesSet).sort());
   }, []);
 
-  // Initial fetch
+  // Cached communities first (instant), then live updates from Firestore.
+  // A live listener keeps retrying by itself when the connection is bad, unlike a one-off fetch.
   useEffect(() => {
-    fetchCommunities();
-  }, [fetchCommunities]);
+    let gotLive = false;
+    setError(null);
+    loadFromCache().then((cached) => {
+      if (cached && !gotLive) {
+        applyCommunities(cached);
+        setLoading(false);
+      }
+    });
+    const unsub = onSnapshot(
+      collection(db, "communities"),
+      (snapshot) => {
+        gotLive = true;
+        const results: CommunityListItem[] = snapshot.docs.map((docSnap) => {
+          const data: any = docSnap.data();
+          return {
+            id: docSnap.id,
+            name: data.name || "Unnamed Community",
+            description: data.description || "",
+            logo: data.logo || undefined,
+            createdBy: data.createdBy,
+            createdAt: data.createdAt,
+            location: data.location || undefined,
+            categories: data.categories || [],
+          };
+        });
+        results.sort((a, b) => a.name.localeCompare(b.name));
+        applyCommunities(results);
+        saveToCache(results);
+        setLoading(false);
+        setRefreshing(false);
+      },
+      (err) => {
+        console.error("Failed to load communities:", err);
+        setLoading(false);
+        setRefreshing(false);
+      }
+    );
+    const t = setTimeout(() => setLoading(false), 12000); // never spin forever
+    return () => {
+      unsub();
+      clearTimeout(t);
+    };
+  }, [applyCommunities]);
 
-  // Pull to refresh handler
+  // Pull to refresh: the list is live already; just show the spinner briefly
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    fetchCommunities(true); // Skip cache on refresh
-  }, [fetchCommunities]);
+    setTimeout(() => setRefreshing(false), 800);
+  }, []);
 
   // Get user location and joined communities when screen is focused (optimized)
   useFocusEffect(
@@ -645,6 +609,11 @@ const myCommunities = useMemo(() => {
     explore: ExploreRoute,
     myCommunities: MyCommunitiesRoute,
   });
+
+  // First-time tour targets
+  const searchRef = useRef<TextInput>(null);
+  const tabsRef = useRef<View>(null);
+  const fabRef = useRef<View>(null);
   
   // Use View + manual insets so content stays below Dynamic Island/notch/status bar (SafeAreaView can fail in tab navigator)
   const safeAreaStyle = [
@@ -682,6 +651,7 @@ const myCommunities = useMemo(() => {
         </View>
 
         <TextInput
+          ref={searchRef}
           style={styles.searchBar}
           placeholder="Search communities..."
           placeholderTextColor={colors.placeholderText as string}
@@ -696,6 +666,7 @@ const myCommunities = useMemo(() => {
           onIndexChange={setIndex}
           initialLayout={{ width: Dimensions.get('window').width }}
 renderTabBar={(props) => (
+            <View ref={tabsRef} collapsable={false}>
             <TabBar
               {...props as any}
               style={{
@@ -720,6 +691,7 @@ renderTabBar={(props) => (
               )}
               // --- END OF FIX ---
             />
+            </View>
           )}
         />
 
@@ -746,6 +718,7 @@ renderTabBar={(props) => (
         </View>
       )}
       <Pressable
+        ref={fabRef}
         style={[styles.fab, { bottom: TAB_BAR_CONTENT_HEIGHT + insets.bottom + SPACING.large }]}
         onPress={() => {
           setShowCreateCommunityHint(false);
@@ -758,6 +731,20 @@ renderTabBar={(props) => (
       >
         <Ionicons name="add" size={32} color={colors.buttonText} />
       </Pressable>
+      <CoachTour
+        id="communities"
+        after="tabs"
+        steps={[
+          { icon: "search", target: searchRef, title: "Search", body: "Look up a community by name." },
+          {
+            icon: "albums",
+            target: tabsRef,
+            title: "Explore and My Communities",
+            body: "Explore shows communities you can join. Tap one to see it, then tap Join. Once you've joined, they also show under My Communities.",
+          },
+          { icon: "add", target: fabRef, title: "Start your own", body: "Tap + to create a community for your campus, area or interest. You can add group chats inside it." },
+        ]}
+      />
     </View>
   );
 };

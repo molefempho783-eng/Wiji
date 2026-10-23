@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import ChatBackground from "../../../components/ChatBackground";
 import {
   View,
   Text,
@@ -971,7 +972,7 @@ const GroupChatScreen = () => {
       const fileUri = `${FileSystem.documentDirectory}${fileName}`;
       const downloadRes = await FileSystem.downloadAsync(media.uri, fileUri);
       const asset = await MediaLibrary.createAssetAsync(downloadRes.uri);
-      await MediaLibrary.createAlbumAsync("Tapza Media", asset, false);
+      await MediaLibrary.createAlbumAsync("Wiji Media", asset, false);
       Alert.alert("Downloaded", "Saved to your gallery 🎉");
     } catch (error: any) {
       console.error("Download failed:", error.message);
@@ -1701,25 +1702,28 @@ const GroupChatScreen = () => {
           </View>
         ) : null}
 
-        <ScrollView 
-          ref={scrollViewRef} 
-          style={styles.messageScrollView}
-          contentContainerStyle={[
-            styles.messageList,
-            { paddingBottom: inputBarHeight + insets.bottom + 12 },
-          ]}
-          keyboardShouldPersistTaps="handled"
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor={colors.primary}
-              colors={[colors.primary]}
-            />
-          }
-        >
-          {messages.map((msg, i) => renderMessage(msg, i))}
-        </ScrollView>
+        <View style={{ flex: 1 }}>
+          <ChatBackground />
+                  <ScrollView 
+                    ref={scrollViewRef} 
+                    style={styles.messageScrollView}
+                    contentContainerStyle={[
+                      styles.messageList,
+                      { paddingBottom: inputBarHeight + insets.bottom + 12 },
+                    ]}
+                    keyboardShouldPersistTaps="handled"
+                    refreshControl={
+                      <RefreshControl
+                        refreshing={refreshing}
+                        onRefresh={onRefresh}
+                        tintColor={colors.primary}
+                        colors={[colors.primary]}
+                      />
+                    }
+                  >
+                    {messages.map((msg, i) => renderMessage(msg, i))}
+                  </ScrollView>
+        </View>
 
 
         <View

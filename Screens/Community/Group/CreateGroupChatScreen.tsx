@@ -213,7 +213,6 @@ const CreateGroupChatScreen = () => {
           members: communityMembers,
           hasPassword,
           password: hasPassword ? password : null,
-          hasGroupWallet: false,
         }
       );
 
