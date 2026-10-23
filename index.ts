@@ -1,12 +1,11 @@
 import { Buffer } from "buffer";
-// React Native doesn't provide Node's `Buffer` globally. Some crypto libs expect it.
-// This is safe as a polyfill; we still never handle private keys outside the device.
+// React Native doesn't provide Node's `Buffer` globally; some libraries expect it.
 // Hermes/React Native typically relies on `globalThis`, but some libs check `global.*`.
 (globalThis as any).Buffer = Buffer;
 (globalThis as any).global = globalThis;
 (globalThis as any).global.Buffer = Buffer;
 
-// Polyfill WebCrypto's `crypto.getRandomValues` (required by bip39 on RN).
+// Polyfill WebCrypto's `crypto.getRandomValues` for libraries that need secure random numbers.
 import { getRandomValues as expoGetRandomValues } from "expo-crypto";
 (globalThis as any).crypto = (globalThis as any).crypto ?? {};
 if (typeof (globalThis as any).crypto.getRandomValues !== "function") {
