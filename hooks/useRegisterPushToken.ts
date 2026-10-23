@@ -2,7 +2,7 @@
 import messaging from '@react-native-firebase/messaging';
 import firebase, { getApps } from '@react-native-firebase/app';
 import { Platform, Alert, PermissionsAndroid, Linking } from 'react-native';
-import { doc, setDoc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { doc, setDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { db, auth, firebaseConfig } from '../firebaseConfig';
 
 /** Prompts the user if needed, returns FCM token or null */
@@ -95,6 +95,23 @@ export async function registerForPushNotificationsAsync(): Promise<string | null
       console.warn('On Android emulator: use an AVD with "Google Play" (not just Google APIs), sign in with a Google account, and cold boot if needed. See NOTIFICATIONS_ANDROID.md.');
     }
     return null;
+  }
+}
+
+/**
+ * Call before signing out so this phone stops getting the user's notifications.
+ * Best-effort: never blocks logout if it fails.
+ */
+export async function removePushTokenFromUser() {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return;
+  try {
+    const token = await messaging().getToken();
+    if (token) {
+      await updateDoc(doc(db, 'users', uid), { fcmTokens: arrayRemove(token) });
+    }
+  } catch (error: any) {
+    console.warn('Could not remove push token on logout:', error?.message);
   }
 }
 
