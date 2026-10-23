@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Tapza",
+    "name": "Wiji",
     "slug": "dsquare4-0",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -20,9 +20,9 @@
         "googleMapsApiKey": "AIzaSyDR5JhBnTT53KmUwNQI6QcWG5RjY5sdYRM"
       },
       "infoPlist": {
-        "NSCameraUsageDescription": "Allow Tapza to scan QR codes to send money.",
-        "NSMicrophoneUsageDescription": "Allow Tapza to use your microphone during voice calls.",
-        "NSLocationWhenInUseUsageDescription": "Allow Tapza to access your location to set pickup and destination on the map.",
+        "NSCameraUsageDescription": "Allow Wiji to scan QR codes to send money.",
+        "NSMicrophoneUsageDescription": "Allow Wiji to use your microphone during voice calls.",
+        "NSLocationWhenInUseUsageDescription": "Allow Wiji to access your location to set pickup and destination on the map.",
         "ITSAppUsesNonExemptEncryption": false,
         "NSDocumentTypes": [
           "public.item",
@@ -61,13 +61,13 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Tapza to scan QR codes to send money."
+          "cameraPermission": "Allow Wiji to scan QR codes to send money."
         }
       ],
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Allow Tapza to access your location to set pickup and destination on the map."
+          "locationWhenInUsePermission": "Allow Wiji to access your location to set pickup and destination on the map."
         }
       ],
       [
@@ -79,7 +79,8 @@
         }
       ],
       "expo-font",
-      "expo-localization"
+      "expo-localization",
+      "@react-native-community/datetimepicker"
     ],
     "extra": {
       "eas": {
