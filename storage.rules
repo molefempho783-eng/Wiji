@@ -11,6 +11,15 @@ service firebase.storage {
     function isSmall() {
       return request.resource.size < 10 * 1024 * 1024;
     }
+    // Wiji team: role stored in Firestore at safetyTeam/{uid}
+    function isStaff() {
+      return isSignedIn()
+        && firestore.exists(/databases/(default)/documents/safetyTeam/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/safetyTeam/$(request.auth.uid)).data.role in ['safety', 'admin'];
+    }
+    function isDocType() {
+      return request.resource.contentType.matches('image/.*|application/pdf');
+    }
     function isMediaType() {
       return request.resource.contentType.matches(
         'image/.*|video/.*|audio/.*|application/pdf|application/octet-stream'
@@ -51,6 +60,31 @@ service firebase.storage {
     match /activity_chat_media/{activityId}/{userId}/{allPaths=**} {
       allow read: if isSignedIn();
       allow write: if isSelf(userId) && isSmall() && isMediaType();
+    }
+    // Driver verification documents (ID, licence, PrDP, vehicle papers, selfie): applicant and safety team only
+    match /driver_docs/{uid}/{allPaths=**} {
+      allow read: if isSelf(uid) || isStaff();
+      allow write: if isSelf(uid) && isSmall() && isDocType();
+    }
+    // Business verification documents (owner ID, proof of address, CIPC, storefront): owner and Wiji team only
+    match /business_docs/{uid}/{allPaths=**} {
+      allow read: if isSelf(uid) || isStaff();
+      allow write: if isSelf(uid) && isSmall() && isDocType();
+    }
+    // Deal photos (file names start with the poster's user id)
+    match /map_specials/{fileName} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && fileName.matches(request.auth.uid + '_.*') && isSmall() && request.resource.contentType.matches('image/.*');
+    }
+    // Public shop pictures: cover (copied by Cloud Functions) and menu photos (uploaded by the owner)
+    match /business_public/{uid}/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isSelf(uid) && isSmall() && request.resource.contentType.matches('image/.*');
+    }
+    // Approved driver's public photo, copied here by Cloud Functions on approval
+    match /driver_public/{uid}/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if false;
     }
     match /{allPaths=**} {
       allow read, write: if false;
