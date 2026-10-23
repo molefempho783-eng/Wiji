@@ -1,5 +1,6 @@
 // Screens/ChatRoomScreen.tsx
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import ChatBackground from "../../components/ChatBackground";
 import {
   View,
   Text,
@@ -1041,7 +1042,7 @@ const handlePickFile = async () => {
       const fileUri = `${FileSystem.documentDirectory}${fileName}`;
       const downloadRes = await FileSystem.downloadAsync(media.uri, fileUri);
       const asset = await MediaLibrary.createAssetAsync(downloadRes.uri);
-      await MediaLibrary.createAlbumAsync("Tapza Media", asset, false);
+      await MediaLibrary.createAlbumAsync("Wiji Media", asset, false);
       Alert.alert("Downloaded", "Saved to your gallery 🎉");
     } catch (error: any) {
       console.error("Download failed:", error.message);
@@ -1292,20 +1293,23 @@ const handlePickFile = async () => {
         </View>
       ) : null}
 
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item, index }) => renderMessage({ item, index })}
-        inverted={false}
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={[
-          styles.messagesList,
-          { paddingBottom: inputBarHeight + extraPanelHeight + insets.bottom + 12 },
-        ]}
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-        onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
-      />
+      <View style={{ flex: 1 }}>
+        <ChatBackground />
+              <FlatList
+                ref={flatListRef}
+                data={messages}
+                keyExtractor={(item) => item.id}
+                renderItem={({ item, index }) => renderMessage({ item, index })}
+                inverted={false}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={[
+                  styles.messagesList,
+                  { paddingBottom: inputBarHeight + extraPanelHeight + insets.bottom + 12 },
+                ]}
+                onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+                onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
+              />
+      </View>
 
       {/* Emoji Picker */}
       {showEmojiPicker && (
