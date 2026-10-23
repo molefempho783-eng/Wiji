@@ -1,4 +1,4 @@
-# Tapza (Bitcoin / Crypto)
+# Wiji (Bitcoin / Crypto)
 
 Expo (React Native) app with Firebase backend (Firestore, Storage, Cloud Functions).
 
