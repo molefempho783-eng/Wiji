@@ -12,23 +12,13 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == uid;
     }
 
-    // rider who owns the ride
-    function isRideOwner() {
-      return isSignedIn() && resource.data.userId == request.auth.uid;
-    }
-
-    // the driver this ride currently targets (driver_requested state)
-    function isTargetedDriver() {
+    // Safety team members carry a custom claim: role = 'safety' or 'admin' (set by grantSafetyRole)
+    // Wiji team: a document at safetyTeam/{uid} with role "admin" or "safety".
+    // Add people by hand in the Firebase console, or from the admin website's Team page.
+    function isStaff() {
       return isSignedIn()
-        && resource.data.driverPreferred is map
-        && resource.data.driverPreferred.id == request.auth.uid;
-    }
-
-    // the driver currently assigned to the ride
-    function isAssignedDriver() {
-      return isSignedIn()
-        && resource.data.driver is map
-        && resource.data.driver.id == request.auth.uid;
+        && exists(/databases/$(database)/documents/safetyTeam/$(request.auth.uid))
+        && get(/databases/$(database)/documents/safetyTeam/$(request.auth.uid)).data.role in ['safety', 'admin'];
     }
 
     // convenience: have only these keys changed?
@@ -93,8 +83,10 @@ service cloud.firestore {
 
     function validCallTransition(oldStatus, newStatus) {
       return
-        (oldStatus == 'ringing' && newStatus in ['accepted', 'declined', 'ended', 'missed', 'failed']) ||
-        (oldStatus == 'accepted' && newStatus in ['ended', 'failed']) ||
+        // Staying in the same state is needed too: the offer, answer and network details
+        // (ICE candidates) are written while the call is ringing or connected.
+        (oldStatus == 'ringing' && newStatus in ['ringing', 'accepted', 'declined', 'ended', 'missed', 'failed']) ||
+        (oldStatus == 'accepted' && newStatus in ['accepted', 'ended', 'failed']) ||
         (oldStatus == 'declined' && newStatus == 'declined') ||
         (oldStatus == 'missed' && newStatus == 'missed') ||
         (oldStatus == 'failed' && newStatus == 'failed') ||
@@ -138,15 +130,6 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /users/{userId}/wallets/{walletId} {
-      allow read, write: if isSignedIn() && request.auth.uid == userId;
-    }
-
-    match /walletTransactions/{transactionId} {
-      allow read: if isSignedIn() && request.auth.uid == resource.data.uid;
-      allow create, update, delete: if false;
-    }
-
     /* ---------- Chats (one-to-one) ---------- */
     match /chats/{chatId} {
       allow get, update: if isChatParticipant(chatId);
@@ -177,86 +160,41 @@ service cloud.firestore {
     }
 
     /* ---------- Businesses ---------- */
+    // Public shop profile of a VERIFIED business (created by Cloud Functions when Wiji verifies it).
+    // The owner can only change their own shop settings; name, location and verification are fixed.
     match /businesses/{businessId} {
       allow get, list: if true;
-      allow create: if isSignedIn();
-      allow update, delete: if isBusinessOwner(businessId);
+      allow create, delete: if false;
+      allow update: if isBusinessOwner(businessId)
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['isOpen', 'collectEnabled', 'deliveryEnabled', 'deliveryFeeCents', 'description', 'hours', 'updatedAt'])
+        && (!('deliveryFeeCents' in request.resource.data) || (request.resource.data.deliveryFeeCents is int
+             && request.resource.data.deliveryFeeCents >= 0 && request.resource.data.deliveryFeeCents <= 50000));
 
       match /catalog/{itemId} {
         allow get, list: if true;
         allow create, update, delete: if isBusinessOwner(businessId);
       }
 
+      // Menu items customers can buy. Prices are in cents; the server re-reads them at checkout.
       match /menu/{itemId} {
         allow get, list: if true;
-        allow create, update, delete: if isBusinessOwner(businessId);
+        allow delete: if isBusinessOwner(businessId);
+        allow create, update: if isBusinessOwner(businessId)
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 80
+          && request.resource.data.priceCents is int
+          && request.resource.data.priceCents >= 100 && request.resource.data.priceCents <= 2000000
+          && request.resource.data.available is bool;
       }
     }
 
     /* ---------- Orders ---------- */
-    function validOrderStatus(s) {
-      return s is string &&
-        s in ['payment_pending', 'paid', 'preparing', 'ready', 'completed', 'cancelled'];
-    }
-
-    function canAdvanceStatus(old, next) {
-      return
-        (old == 'payment_pending' && next in ['paid', 'cancelled']) ||
-        (old == 'paid'            && next in ['preparing', 'cancelled']) ||
-        (old == 'preparing'       && next in ['ready', 'cancelled']) ||
-        (old == 'ready'           && next == 'completed') ||
-        (old == 'completed'      && next == 'completed') ||
-        (old == 'cancelled'      && next == 'cancelled');
-    }
-
-    function isOrderOwner() {
-      return isSignedIn() && resource.data.ownerId == request.auth.uid;
-    }
-
-    function isOrderBuyer() {
-      return isSignedIn() && resource.data.userId == request.auth.uid;
-    }
-
-    function createIsBuyer() {
-      return isSignedIn() && request.resource.data.userId == request.auth.uid;
-    }
-
+    // Orders are created, priced and moved along only by Cloud Functions (functions/src/shop.ts)
     match /orders/{orderId} {
-      allow get, list: if isOrderOwner() || isOrderBuyer();
-
-      allow create: if createIsBuyer()
-        && request.resource.data.keys().hasAll([
-             'businessId', 'ownerId', 'userId', 'items', 'total', 'status'
-           ])
-        && request.resource.data.businessId is string
-        && request.resource.data.ownerId  is string
-        && request.resource.data.userId   is string
-        && request.resource.data.items    is list
-        && request.resource.data.total    is number
-        && validOrderStatus(request.resource.data.status);
-
-      allow update: if
-        (
-          isOrderOwner() &&
-          changedOnly(['status','updatedAt']) &&
-          validOrderStatus(request.resource.data.status) &&
-          canAdvanceStatus(resource.data.status, request.resource.data.status)
-        )
-        ||
-        (
-          isOrderBuyer() &&
-          changedOnly(['status','updatedAt']) &&
-          resource.data.status in ['paid','preparing'] &&
-          request.resource.data.status == 'cancelled'
-        );
-
-      allow delete: if false;
-    }
-
-    match /wallet_transfer_requests/{txId} {
-      allow create: if isSignedIn();
-      allow read:   if isSignedIn();
-      allow update, delete: if false;
+      allow get, list: if isSignedIn()
+        && (resource.data.ownerId == request.auth.uid || resource.data.userId == request.auth.uid);
+      allow create, update, delete: if false;
     }
 
     /* ---------- Communities ---------- */
@@ -382,129 +320,81 @@ service cloud.firestore {
       }
     }
 
-    /* ---------- Wallets + Transactions ---------- */
-    match /wallets/{userId} {
-      allow get, list: if isSelf(userId);
-      allow create, update, delete: if false;
-
-      match /transactions/{txId} {
-        allow get, list: if isSelf(userId);
-        allow create, update, delete: if false;
-      }
-    }
-
-    match /transactions/{transactionId} {
-      allow get, list: if isSignedIn() && request.auth.uid in resource.data.participants;
-      allow create, update, delete: if false;
-    }
-
     /* ---------- Driver applications/profile ---------- */
+    // Driver applications hold ID numbers and documents: only the applicant and the safety team see them.
+    // Applicants can edit only while their application is a draft; status, checks and decisions
+    // are changed only by Cloud Functions (submitDriverApplication / reviewDriverApplication).
     match /driver_applications/{uid} {
-      allow read: if isSignedIn();
-      allow write: if isSelf(uid);
-    }
-
-    match /drivers/{uid} {
-      allow read: if true;
-      allow write: if isSelf(uid);
-    }
-
-    match /drivers_live/{uid} {
-      allow read: if true;
-      allow write: if isSelf(uid);
-    }
-
-    /* ---------- Rides ---------- */
-    match /rides/{rideId} {
-      allow read: if isSignedIn() && (
-        resource.data.userId == request.auth.uid ||
-        (resource.data.driverPreferred is map && resource.data.driverPreferred.id == request.auth.uid) ||
-        (resource.data.driver is map && resource.data.driver.id == request.auth.uid)
-      );
-
-      allow create: if isSignedIn()
-        && request.resource.data.userId == request.auth.uid;
-
-      allow update: if isSignedIn() && (
-        (
-          isRideOwner()
-          && changedOnly(['status','updatedAt'])
-          && request.resource.data.status == 'cancelled'
-        )
-        ||
-        (
-          isRideOwner()
-          && resource.data.status == 'on_trip'
-          && changedOnly(['status','updatedAt'])
-          && request.resource.data.status == 'completed'
-        )
-        ||
-        (
-          isTargetedDriver()
-          && resource.data.status == 'driver_requested'
-          && (
-            (
-              request.resource.data.status == 'driver_assigned'
-              && request.resource.data.driver is map
-              && request.resource.data.driver.id == request.auth.uid
-              && (
-                   request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','driver','updatedAt'])
-                || request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','driver','driverPreferred','updatedAt'])
-              )
-            )
-            ||
-            (
-              request.resource.data.status == 'driver_declined'
-              && request.resource.data.driverPreferred == null
-              && changedOnly(['status','driverPreferred','updatedAt'])
-            )
-          )
-        )
-        ||
-        (
-          isAssignedDriver()
-          && changedOnly(['status','updatedAt'])
-          && (
-            (resource.data.status == 'driver_assigned' && request.resource.data.status in ['driver_arrived','on_trip']) ||
-            (resource.data.status == 'driver_arrived' && request.resource.data.status == 'on_trip')
-          )
-        )
-      );
-
+      allow read: if isSelf(uid) || isStaff();
+      allow create: if isSelf(uid)
+        && request.resource.data.status == 'draft'
+        && !request.resource.data.keys().hasAny(['checks', 'decision', 'submittedAt', 'approvedAt', 'reverify', 'lastApproved']);
+      allow update: if isSelf(uid)
+        && resource.data.status == 'draft'
+        && request.resource.data.status == 'draft'
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['checks', 'decision', 'submittedAt', 'approvedAt', 'status', 'reverify', 'lastApproved', 'reopenedAt', 'changedDocs']);
       allow delete: if false;
     }
 
-    /* ---------- Group Wallets ---------- */
-    match /groupWallets/{groupId} {
-      // Read: only members of this group (group chat) can read the wallet (balance, privateKey, passcode hash).
-      // Uses communityId stored on the document; backwards compat: creator can always read if doc has no communityId.
+    // Public, verified driver profile shown to passengers. Written only by Cloud Functions on approval.
+    match /drivers/{uid} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // Live position of online drivers: only active, verified drivers can publish their own position,
+    // and only signed-in users can read it.
+    match /drivers_live/{uid} {
+      allow read: if isSignedIn();
+      allow write: if isSelf(uid)
+        && exists(/databases/$(database)/documents/drivers/$(uid))
+        && get(/databases/$(database)/documents/drivers/$(uid)).data.status == 'active';
+    }
+
+    // Trip ratings: the driver sees their own (the app hides who rated), the safety team sees all.
+    // Written only by Cloud Functions (rateRide).
+    match /driverRatings/{rideId} {
+      allow read: if isStaff() || (isSignedIn() && resource.data.driverUid == request.auth.uid);
+      allow write: if false;
+    }
+
+    // Who reviewed what, and when: visible to the safety team only, never editable.
+    match /driverReviewLog/{entryId} {
+      allow read: if isStaff();
+      allow write: if false;
+    }
+
+    /* ---------- Rides (Wiji Rides) ---------- */
+    // A ride is visible to its passenger, its driver, and the driver it's currently offered to.
+    // Every status change happens in Cloud Functions (functions/src/rides.ts), never from the app.
+    match /rides/{rideId} {
       allow read: if isSignedIn() && (
-        (
-          resource.data.get('communityId', '') is string
-          && resource.data.communityId != ''
-          && isMemberOfGroupChat(resource.data.communityId, groupId)
-        )
-        || resource.data.createdBy == request.auth.uid
+        resource.data.riderUid == request.auth.uid ||
+        resource.data.driverUid == request.auth.uid ||
+        resource.data.offeredTo == request.auth.uid ||
+        isStaff()
       );
+      allow write: if false;
+    }
 
-      // Create: only when creating with yourself as createdBy (group creation flow).
-      allow create: if isSignedIn()
-        && request.resource.data.createdBy == request.auth.uid
-        && request.resource.data.communityId is string;
+    // The trip PIN: only the passenger can read it, so a driver can't start a trip without them
+    match /ridePins/{rideId} {
+      allow read: if isSignedIn() && resource.data.riderUid == request.auth.uid;
+      allow write: if false;
+    }
 
-      // Update/delete: only the wallet creator (group admin).
-      allow update, delete: if isSignedIn() && resource.data.createdBy == request.auth.uid;
-
-      match /transactions/{txId} {
-        allow read: if isSignedIn() && (
-          (
-            get(/databases/$(database)/documents/groupWallets/$(groupId)).data.get('communityId', '') != ''
-            && isMemberOfGroupChat(get(/databases/$(database)/documents/groupWallets/$(groupId)).data.communityId, groupId)
-          )
-          || get(/databases/$(database)/documents/groupWallets/$(groupId)).data.createdBy == request.auth.uid
-        );
-        allow write: if isSignedIn() && get(/databases/$(database)/documents/groupWallets/$(groupId)).data.createdBy == request.auth.uid;
-      }
+    // Emergency alerts and incident reports: the safety team, plus the person who raised them
+    match /safetyAlerts/{alertId} {
+      allow read: if isStaff() || (isSignedIn() && resource.data.raisedBy == request.auth.uid);
+      allow write: if false;
+    }
+    match /incidentReports/{reportId} {
+      allow read: if isStaff() || (isSignedIn() && resource.data.reporterUid == request.auth.uid);
+      allow write: if false;
+    }
+    match /safetyTeam/{uid} {
+      allow read: if isSelf(uid) || isStaff();
+      allow write: if false;
     }
 
     /* ---------- Activities (Real-Time Meetups) ---------- */
@@ -582,8 +472,14 @@ service cloud.firestore {
     match /mapSpecials/{specialId} {
       allow read: if isSignedIn();
 
+      // Only verified, active businesses can post deals, always under their own business
       allow create: if isSignedIn()
         && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.businessId == request.auth.uid
+        && exists(/databases/$(database)/documents/businesses/$(request.auth.uid))
+        && get(/databases/$(database)/documents/businesses/$(request.auth.uid)).data.active == true
+        && (!('priceCents' in request.resource.data) || (request.resource.data.priceCents is int
+             && request.resource.data.priceCents >= 100 && request.resource.data.priceCents <= 2000000))
         && request.resource.data.title is string
         && request.resource.data.location is string
         && request.resource.data.location.size() > 0
@@ -598,19 +494,20 @@ service cloud.firestore {
 
       allow update: if isSignedIn()
         && resource.data.createdBy == request.auth.uid
-        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['createdBy', 'lastNotifiedUtcDate', 'lastNotifiedOccurrenceKey']);
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['createdBy', 'businessId', 'lastNotifiedUtcDate', 'lastNotifiedOccurrenceKey']);
 
       allow delete: if isSignedIn() && resource.data.createdBy == request.auth.uid;
     }
 
     /* ---------- 1-to-1 Call Sessions ---------- */
     match /callSessions/{callId} {
-      allow get, list: if isSignedIn()
-        && (
-          (resource.data.participants is list && request.auth.uid in resource.data.participants)
-          || resource.data.callerId == request.auth.uid
-          || resource.data.calleeId == request.auth.uid
-        );
+      // One record: a participant (or nobody, if it doesn't exist yet, so a check never errors).
+      allow get: if isSignedIn()
+        && (resource == null || request.auth.uid in resource.data.participants);
+      // Queries must be where('participants', 'array-contains', myUid). Keep this a single
+      // condition: Firestore checks queries against the rule itself, and an OR with type checks
+      // can't be proven from the query, so the whole query was refused.
+      allow list: if isSignedIn() && request.auth.uid in resource.data.participants;
 
       allow create: if isSignedIn()
         && request.resource.data.participants is list
@@ -659,6 +556,55 @@ service cloud.firestore {
         );
 
       allow delete: if false;
+    }
+
+    // Trusted contacts and trip-sharing settings: private to the user (their profile doc is public)
+    match /users/{userId}/safety/{docId} {
+      allow read, write: if isSelf(userId);
+    }
+
+    /* ---------- Paystack payments (all writes happen in Cloud Functions) ---------- */
+    // Drivers and merchants who can receive payments: anyone signed in can see who they're paying
+    match /payees/{uid} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+    // A payment is visible only to the person who paid and the person who was paid
+    match /payments/{reference} {
+      allow read: if isStaff() || (isSignedIn()
+        && (resource.data.payerUid == request.auth.uid || resource.data.payeeUid == request.auth.uid));
+      allow write: if false;
+    }
+    // Saved cards: owner sees brand and last 4 digits only; the Paystack token lives in
+    // paystackAuthorizations, which the catch-all below keeps unreadable
+    match /paymentMethods/{uid}/cards/{cardId} {
+      allow read: if isSelf(uid);
+      allow write: if false;
+    }
+
+    /* ---------- Business verification ---------- */
+    // Owner ID numbers, addresses and documents: only the owner and the Wiji team see them.
+    // The owner edits only while it's a draft; status and decisions change only in Cloud Functions
+    // (submitBusinessVerification / reviewBusinessVerification).
+    match /business_verifications/{uid} {
+      allow read: if isSelf(uid) || isStaff();
+      allow create: if isSelf(uid)
+        && request.resource.data.status == 'draft'
+        && !request.resource.data.keys().hasAny(['decision', 'submittedAt', 'verifiedAt', 'reviewer']);
+      allow update: if isSelf(uid)
+        && resource.data.status == 'draft'
+        && request.resource.data.status == 'draft'
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['decision', 'submittedAt', 'verifiedAt', 'reviewer', 'status']);
+      allow delete: if false;
+    }
+    match /businessReviewLog/{entryId} {
+      allow read: if isStaff();
+      allow write: if false;
+    }
+    // Admin website activity log
+    match /adminLog/{entryId} {
+      allow read: if isStaff();
+      allow write: if false;
     }
 
     /* ---------- Catch-all ---------- */
