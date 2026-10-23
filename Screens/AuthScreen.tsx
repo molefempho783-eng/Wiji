@@ -13,14 +13,15 @@ import {
   Platform 
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { auth, db, app } from "../firebaseConfig";
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
+import { auth, db } from "../firebaseConfig";
+import { createUserWithEmailAndPassword, sendPasswordResetEmail, signInWithEmailAndPassword } from "firebase/auth";
 import { collection, doc, setDoc } from "firebase/firestore";
-import { getFunctions, httpsCallable } from "firebase/functions";
 import { useNavigation } from "@react-navigation/native";
 import { StackNavigationProp } from "@react-navigation/stack";
 import { RootStackParamList } from "../types";
 import { LinearGradient } from "expo-linear-gradient";
+import { Ionicons } from "@expo/vector-icons";
+import { BRAND, BRAND_BG_GRADIENT, BRAND_BUTTON_GRADIENT } from "./context/brand";
 
 type AuthScreenNavigationProp = StackNavigationProp<RootStackParamList, "AuthScreen">;
 
@@ -37,7 +38,6 @@ const AuthScreen = () => {
   const navigation = useNavigation<AuthScreenNavigationProp>();
   const insets = useSafeAreaInsets();
   
-  const functions = getFunctions(app, 'us-central1');
 
   const handleAuth = async () => {
     // ... (Your handleAuth logic is correct, no changes needed)
@@ -82,6 +82,13 @@ const AuthScreen = () => {
     }
   };
 
+  const showResetSent = () =>
+    Alert.alert(
+      "Check your email",
+      `If ${email.trim()} has a Wiji account, we've sent a link to reset your password. Open it, choose a new password, then sign in here.\n\nCan't find it? Check your spam folder.`,
+      [{ text: "OK", onPress: () => { setShowForgotPassword(false); setIsSignup(false); setPassword(""); } }]
+    );
+
   const handlePasswordReset = async () => {
     if (!email.trim() || !email.includes('@')) {
       setError("Please enter a valid email address.");
@@ -92,53 +99,23 @@ const AuthScreen = () => {
     setError("");
 
     try {
-      const resetPasswordFn = httpsCallable(functions, 'resetPassword');
-      const result = await resetPasswordFn({ email: email.trim().toLowerCase() });
-      const data = result.data as { success: boolean; message: string; password: string; emailSent?: boolean };
-
-      // Always show the password - it's now always returned in the response
-      if (data.password) {
-        Alert.alert(
-          data.emailSent ? "Password Reset - Check Email" : "Password Reset",
-          `${data.message || 'Your new password has been generated.'}\n\nYour new password is:\n\n${data.password}\n\n⚠️ Please save this password and log in immediately!`,
-          [
-            {
-              text: "Use This Password",
-              onPress: () => {
-                setPassword(data.password);
-                setShowForgotPassword(false);
-                // Switch to login mode
-                setIsSignup(false);
-              }
-            },
-            {
-              text: "OK",
-              onPress: () => {
-                setPassword(data.password);
-                setShowForgotPassword(false);
-              }
-            }
-          ]
-        );
-      } else {
-        // Fallback (shouldn't happen)
-        Alert.alert(
-          "Password Reset",
-          data.message || "Password reset completed. Please check your email.",
-          [
-            {
-              text: "OK",
-              onPress: () => {
-                setShowForgotPassword(false);
-              }
-            }
-          ]
-        );
-      }
+      // Firebase emails a secure link; the user picks a new password on that page.
+      await sendPasswordResetEmail(auth, email.trim().toLowerCase());
+      showResetSent();
     } catch (err: any) {
-      const errorMessage = err?.message || err?.code || "Failed to reset password. Please try again.";
-      setError(errorMessage);
-      Alert.alert("Error", errorMessage);
+      const code = String(err?.code || "");
+      if (code === "auth/user-not-found") {
+        // Don't reveal whether an email has an account
+        showResetSent();
+      } else if (code === "auth/invalid-email") {
+        setError("Please enter a valid email address.");
+      } else if (code === "auth/too-many-requests") {
+        setError("Too many attempts. Please wait a few minutes and try again.");
+      } else if (code === "auth/network-request-failed") {
+        setError("No internet connection. Check your connection and try again.");
+      } else {
+        setError("Couldn't send the reset email. Please try again.");
+      }
     } finally {
       setResetLoading(false);
     }
@@ -146,7 +123,7 @@ const AuthScreen = () => {
 
   return (
     <LinearGradient
-      colors={["#000000", "#1a1a2e", "#16213e", "#0f3460", "#533483"]}
+      colors={[...BRAND_BG_GRADIENT]}
       start={{ x: 0, y: 0 }}
       end={{ x: 1, y: 1 }}
       style={styles.background}
@@ -166,7 +143,11 @@ const AuthScreen = () => {
             
             {/* Logo */}
             <View style={{ alignItems: "center", marginBottom: 20 }}>
-              <Image source={require("../assets/logo.png")} resizeMode="contain" style={{ width: 200, height: 200 }} />
+              <Image source={require("../assets/logo.png")} resizeMode="contain" style={{ width: 112, height: 112 }} accessibilityLabel="Wiji logo" />
+              <Text style={styles.brandName}>wiji</Text>
+              <Text style={styles.tagline}>
+                {isSignup ? "Create your account to join communities, chat and find things to do near you." : "Welcome back."}
+              </Text>
             </View>
 
             {/* Form Container */}
@@ -195,6 +176,11 @@ const AuthScreen = () => {
                   autoCapitalize="none"
                 />
               </View>
+              {showForgotPassword ? (
+                <Text style={{ color: BRAND.violetSoft, fontSize: 14, lineHeight: 20, marginBottom: 16, textAlign: "center" }}>
+                  Enter the email you signed up with. We'll email you a link to choose a new password.
+                </Text>
+              ) : null}
               {!showForgotPassword && (
                 <View style={{ width: "100%", marginBottom: 20 }}>
                   <TextInput
@@ -218,11 +204,11 @@ const AuthScreen = () => {
                     disabled={resetLoading}
                   >
                     <LinearGradient 
-                      colors={resetLoading ? ["#999", "#666"] : ["#9C3FE4", "#C65647"]} 
+                      colors={resetLoading ? ["#999", "#666"] : [...BRAND_BUTTON_GRADIENT]} 
                       style={{ borderRadius: 15, paddingVertical: 15, alignItems: "center" }}
                     >
                       <Text style={{ color: "#FFFFFF", fontSize: 17, fontWeight: "bold" }}>
-                        {resetLoading ? "Sending..." : "Send New Password"}
+                        {resetLoading ? "Sending..." : "Send reset link"}
                       </Text>
                     </LinearGradient>
                   </TouchableOpacity>
@@ -231,7 +217,7 @@ const AuthScreen = () => {
                     setShowForgotPassword(false);
                     setError("");
                   }}>
-                    <Text style={{ color: "#007bff", fontSize: 16, marginTop: 10 }}>
+                    <Text style={{ color: BRAND.violetSoft, fontSize: 16, marginTop: 10 }}>
                       Back to Login
                     </Text>
                   </TouchableOpacity>
@@ -243,7 +229,7 @@ const AuthScreen = () => {
                       <View style={styles.legalRow}>
                         <TouchableOpacity onPress={() => setAcceptedTerms((prev) => !prev)}>
                           <View style={[styles.checkbox, acceptedTerms && styles.checkboxChecked]}>
-                            {acceptedTerms ? <Text style={styles.checkboxMark}>X</Text> : null}
+                            {acceptedTerms ? <Ionicons name="checkmark" size={14} color="#FFFFFF" /> : null}
                           </View>
                         </TouchableOpacity>
                         <Text style={styles.legalText}>I agree to the </Text>
@@ -255,7 +241,7 @@ const AuthScreen = () => {
                       <View style={styles.legalRow}>
                         <TouchableOpacity onPress={() => setAcceptedPrivacy((prev) => !prev)}>
                           <View style={[styles.checkbox, acceptedPrivacy && styles.checkboxChecked]}>
-                            {acceptedPrivacy ? <Text style={styles.checkboxMark}>X</Text> : null}
+                            {acceptedPrivacy ? <Ionicons name="checkmark" size={14} color="#FFFFFF" /> : null}
                           </View>
                         </TouchableOpacity>
                         <Text style={styles.legalText}>I agree to the </Text>
@@ -267,7 +253,7 @@ const AuthScreen = () => {
                   )}
 
                   <TouchableOpacity style={{ width: "100%", marginBottom: 20 }} onPress={handleAuth}>
-                    <LinearGradient colors={["#9C3FE4", "#C65647"]} style={{ borderRadius: 15, paddingVertical: 15, alignItems: "center" }}>
+                    <LinearGradient colors={[...BRAND_BUTTON_GRADIENT]} style={{ borderRadius: 15, paddingVertical: 15, alignItems: "center" }}>
                       <Text style={{ color: "#FFFFFF", fontSize: 17, fontWeight: "bold" }}>{isSignup ? "Sign Up" : "Login"}</Text>
                     </LinearGradient>
                   </TouchableOpacity>
@@ -280,14 +266,14 @@ const AuthScreen = () => {
                       }}
                       style={{ marginBottom: 10 }}
                     >
-                      <Text style={{ color: "#007bff", fontSize: 14 }}>
+                      <Text style={{ color: BRAND.violetSoft, fontSize: 14 }}>
                         Forgot Password?
                       </Text>
                     </TouchableOpacity>
                   )}
 
                   <TouchableOpacity onPress={() => setIsSignup(!isSignup)}>
-                    <Text style={{ color: "#007bff", fontSize: 16, marginTop: 10 }}>
+                    <Text style={{ color: BRAND.violetSoft, fontSize: 16, marginTop: 10 }}>
                       {isSignup ? "Already have an account? Login" : "Don't have an account? Sign Up"}
                     </Text>
                   </TouchableOpacity>
@@ -318,12 +304,28 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   input: {
-    height: 50,
+    height: 52,
     width: "100%",
-    backgroundColor: "#EFEFEF",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    color: '#000', 
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    color: BRAND.ink,
+  },
+  brandName: {
+    color: "#FFFFFF",
+    fontSize: 34,
+    fontWeight: "800",
+    letterSpacing: -0.5,
+    marginTop: 12,
+  },
+  tagline: {
+    color: BRAND.mutedOnInk,
+    fontSize: 15,
+    lineHeight: 21,
+    textAlign: "center",
+    marginTop: 8,
+    paddingHorizontal: 12,
   },
   legalContainer: {
     width: "100%",
@@ -340,8 +342,8 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   checkbox: {
-    width: 18,
-    height: 18,
+    width: 22,
+    height: 22,
     borderRadius: 4,
     borderWidth: 1,
     borderColor: "#FFFFFF",
@@ -351,8 +353,8 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   checkboxChecked: {
-    backgroundColor: "#9C3FE4",
-    borderColor: "#9C3FE4",
+    backgroundColor: BRAND.violet,
+    borderColor: BRAND.violet,
   },
   checkboxMark: {
     color: "#FFFFFF",
@@ -365,7 +367,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   legalLink: {
-    color: "#7CC4FF",
+    color: BRAND.mint,
     fontSize: 13,
     textDecorationLine: "underline",
   },
