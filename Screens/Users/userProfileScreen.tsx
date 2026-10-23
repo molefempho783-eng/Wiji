@@ -19,7 +19,8 @@ import { StackNavigationProp } from "@react-navigation/stack";
 
 import createStyles, { FONT_SIZES, SPACING } from '../context/appStyles';
 import { useTheme } from '../context/ThemeContext';
-import { Ionicons } from '@expo/vector-icons'; 
+import { Ionicons } from '@expo/vector-icons';
+import { driverStatsText } from "../../services/rides";
 
 type UserProfileRouteProp = RouteProp<RootStackParamList, "UserProfileScreen">;
 type NavigationProp = StackNavigationProp<RootStackParamList, "UserProfileScreen">;
@@ -51,6 +52,22 @@ const UserProfileScreen = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
+  const [acceptsPayments, setAcceptsPayments] = useState(false);
+  const [hasShop, setHasShop] = useState(false);
+  const [driverInfo, setDriverInfo] = useState<any | null>(null);
+
+  useEffect(() => {
+    getDoc(doc(db, "payees", userId))
+      .then((s) => setAcceptsPayments(s.exists() && s.data()?.active !== false))
+      .catch(() => setAcceptsPayments(false));
+    // Verified drivers show their rating and number of trips
+    getDoc(doc(db, "drivers", userId))
+      .then((s) => setDriverInfo(s.exists() && s.data()?.status === "active" ? s.data() : null))
+      .catch(() => setDriverInfo(null));
+    getDoc(doc(db, "businesses", userId))
+      .then((s) => setHasShop(s.exists() && s.data()?.active === true))
+      .catch(() => setHasShop(false));
+  }, [userId]);
 
   const fetchUserData = async () => {
     setRefreshing(true);
@@ -205,6 +222,12 @@ const UserProfileScreen = () => {
       />
     </View>
       <Text style={styles.username}>{user.username}</Text>
+      {driverInfo ? (
+        <View style={{ flexDirection: "row", alignItems: "center", alignSelf: "center", gap: 6, marginTop: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, backgroundColor: colors.cardHighlight }}>
+          <Ionicons name="car-sport" size={16} color={colors.primary} />
+          <Text style={{ color: colors.text, fontWeight: "700" }}>Verified Wiji driver · {driverStatsText(driverInfo)}</Text>
+        </View>
+      ) : null}
 
       <View style={styles.sectionContainer}>
         <Text style={styles.sectionHeader}>About Me</Text>
@@ -256,6 +279,24 @@ const UserProfileScreen = () => {
           ) : (
             <Text style={globalStyles.primaryButtonText}>Chat</Text>
           )}
+        </TouchableOpacity>
+      )}
+
+      {hasShop && (
+        <TouchableOpacity
+          style={[globalStyles.primaryButton, { marginTop: SPACING.medium }]}
+          onPress={() => navigation.navigate("BusinessShopScreen", { businessId: userId })}
+        >
+          <Text style={globalStyles.primaryButtonText}>Visit shop</Text>
+        </TouchableOpacity>
+      )}
+
+      {auth.currentUser?.uid !== userId && acceptsPayments && (
+        <TouchableOpacity
+          style={[globalStyles.primaryButton, { marginTop: SPACING.medium, backgroundColor: colors.accent }]}
+          onPress={() => navigation.navigate("PayScreen", { payeeUid: userId })}
+        >
+          <Text style={globalStyles.primaryButtonText}>Pay</Text>
         </TouchableOpacity>
       )}
     </ScrollView>

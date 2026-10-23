@@ -1,5 +1,6 @@
 // Screens/Users/UsersScreen.tsx
-import React, { useEffect, useState, useMemo, useCallback } from "react";
+import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import CoachTour from "../../components/CoachTour";
 import {
   View,
   Text,
@@ -10,7 +11,8 @@ import {
   Image,
   RefreshControl,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import { StackNavigationProp } from "@react-navigation/stack";
 import { RootStackParamList } from "../../types";
@@ -28,6 +30,7 @@ import {
   arrayUnion,
 } from "firebase/firestore";
 import { db, auth } from "../../firebaseConfig";
+import { readCache, writeCache } from "../../services/cache";
 import { useAuth } from "../../AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import createStyles, { FONT_SIZES } from "../context/appStyles";
@@ -87,38 +90,47 @@ const UsersScreen = () => {
   >({});
   const [currentUserData, setCurrentUserData] = useState<UserRow | null>(null);
   const [conversations, setConversations] = useState<ConversationRow[]>([]);
-  const [showProfileTapHint, setShowProfileTapHint] = useState<boolean | null>(null);
 
   const { user: currentUser } = useAuth();
 
-  /** One-time hint: "Tap to edit profile" - only show until user has tapped header once */
+
+
+  /** Show the last known users and chats instantly (from the phone), then update live */
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const seen = await AsyncStorage.getItem(PROFILE_HEADER_HINT_SEEN_KEY);
-        if (mounted) setShowProfileTapHint(seen !== "true");
-      } catch {
-        if (mounted) setShowProfileTapHint(true);
+    if (!currentUser) return;
+    let cancelled = false;
+    Promise.all([
+      readCache<UserRow[]>(`users:${currentUser.uid}`),
+      readCache<Record<string, ConversationRow>>(`chats:${currentUser.uid}`),
+    ]).then(([cachedUsers, cachedChats]) => {
+      if (cancelled) return;
+      if (cachedUsers?.length) {
+        setUsers((prev) => (prev.length ? prev : cachedUsers));
+        setLoading(false);
       }
-    })();
-    return () => { mounted = false; };
-  }, []);
+      if (cachedChats) setChatDocsByChatId((prev) => (Object.keys(prev).length ? prev : cachedChats));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.uid]);
 
-  /** 🟢 Load users function (reusable for refresh) */
-  const loadUsers = useCallback(() => {
-    if (!currentUser) return () => {};
-
+  /** 🟢 Live list of users: one listener while signed in (Firestore reconnects by itself after drops) */
+  useEffect(() => {
+    if (!currentUser) return;
+    const uid = currentUser.uid;
     const unsub = onSnapshot(
       collection(db, "users"),
       (snap) => {
         const list: UserRow[] = snap.docs
-          .map((d) => ({ id: d.id, ...(d.data() as any) }))
-          .filter((u) => u.id !== currentUser.uid);
-        list.sort((a, b) =>
-          String(a.username || "").localeCompare(String(b.username || ""))
-        );
+          .filter((d) => d.id !== uid)
+          .map((d) => {
+            const { fcmTokens, chatIds, ...rest } = d.data() as any; // not needed on this screen
+            return { id: d.id, ...rest };
+          });
+        list.sort((a, b) => String(a.username || "").localeCompare(String(b.username || "")));
         setUsers(list);
+        writeCache(`users:${uid}`, list);
         setLoading(false);
         setRefreshing(false);
       },
@@ -128,26 +140,13 @@ const UsersScreen = () => {
         setRefreshing(false);
       }
     );
-
-    return unsub;
-  }, [currentUser]);
-
-  /** 🟢 Real-time all users listener */
-  useFocusEffect(
-    useCallback(() => {
-      if (!currentUser) return;
-      return loadUsers();
-    }, [currentUser, loadUsers])
-  );
-
-  /** Pull to refresh handler */
-  const onRefresh = useCallback(() => {
-    if (!currentUser) return;
-    setRefreshing(true);
-    // Trigger reload by unsubscribing and resubscribing
-    loadUsers();
-  }, [currentUser, loadUsers]);
-
+    // Never spin forever: if the network is very slow, stop the spinner and keep listening
+    const t = setTimeout(() => setLoading(false), 12000);
+    return () => {
+      unsub();
+      clearTimeout(t);
+    };
+  }, [currentUser?.uid]);
 
   /** 👤 Fetch current user's profile (for header progress + avatar) */
   const fetchCurrentUserProfile = useCallback(async () => {
@@ -165,6 +164,12 @@ const UsersScreen = () => {
 
   useEffect(() => {
     fetchCurrentUserProfile();
+  }, [fetchCurrentUserProfile]);
+
+  /** Pull to refresh: the lists are already live, so just refresh the profile and stop the spinner */
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    fetchCurrentUserProfile().finally(() => setTimeout(() => setRefreshing(false), 600));
   }, [fetchCurrentUserProfile]);
 
   useFocusEffect(
@@ -266,6 +271,7 @@ const UsersScreen = () => {
       return bMs - aMs;
     });
     setConversations(list);
+    if (currentUser) writeCache(`chats:${currentUser.uid}`, chatDocsByChatId);
     const unreadMap: Record<string, boolean> = {};
     const unreadCountMap: Record<string, number> = {};
     const previews: Record<string, { text?: string; senderId?: string; ts?: any }> = {};
@@ -545,19 +551,20 @@ const exploreUsers = useMemo(() => {
   const profileTotal = 8;
   const profileProgress = profileTotal > 0 ? profileCompleted / profileTotal : 0;
 
+  // First-time tour targets
+  const headerRef = useRef<View>(null);
+  const tabsRef = useRef<View>(null);
+  const callFabRef = useRef<View>(null);
+  const insets = useSafeAreaInsets();
+
   /** 🖥 UI */
   return (
     <SafeAreaView style={globalStyles.safeArea} edges={["top", "left", "right"]}>
       {/* Header with Profile Pic and profile strength bar - whole header taps to Profile */}
       <TouchableOpacity
+        ref={headerRef}
         style={styles.headerContainer}
         onPress={async () => {
-          if (showProfileTapHint) {
-            try {
-              await AsyncStorage.setItem(PROFILE_HEADER_HINT_SEEN_KEY, "true");
-            } catch {}
-            setShowProfileTapHint(false);
-          }
           navigation.navigate("ProfileScreen");
         }}
         activeOpacity={0.8}
@@ -607,55 +614,6 @@ const exploreUsers = useMemo(() => {
         </View>
       </TouchableOpacity>
 
-      {showProfileTapHint === true && (
-        <View
-          style={{
-            position: 'absolute',
-            top: 56,
-            left: 16,
-            right: 16,
-            alignItems: 'center',
-            zIndex: 10,
-          }}
-          pointerEvents="box-none"
-        >
-          {/* Pointer (triangle) pointing up at the header */}
-          <View
-            style={{
-              width: 0,
-              height: 0,
-              borderLeftWidth: 8,
-              borderRightWidth: 8,
-              borderBottomWidth: 10,
-              borderLeftColor: 'transparent',
-              borderRightColor: 'transparent',
-              borderBottomColor: colors.primary + '22',
-              alignSelf: 'center',
-            }}
-          />
-          <View
-            style={{
-              backgroundColor: colors.primary + '22',
-              paddingVertical: 10,
-              paddingHorizontal: 14,
-              borderRadius: 16,
-              borderTopRightRadius: 4,
-              borderTopLeftRadius: 4,
-              maxWidth: 280,
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.15,
-              shadowRadius: 6,
-              elevation: 4,
-            }}
-          >
-            <Text style={{ fontSize: 13, color: colors.text }}>
-              Tap above to edit your profile
-            </Text>
-          </View>
-        </View>
-      )}
-
       <TabView
         navigationState={{ index, routes }}
         renderScene={renderScene}
@@ -663,6 +621,7 @@ const exploreUsers = useMemo(() => {
         swipeEnabled
         initialLayout={{ width: 360 }}
         renderTabBar={(props) => (
+          <View ref={tabsRef} collapsable={false}>
           <TabBar
             {...props}
             style={{
@@ -675,7 +634,58 @@ const exploreUsers = useMemo(() => {
             activeColor={colors.primary}
             inactiveColor={colors.secondaryText}
           />
+          </View>
         )}
+      />
+      {/* Calls moved here from the tab bar */}
+      <TouchableOpacity
+        ref={callFabRef}
+        onPress={() => navigation.navigate("CallScreen")}
+        accessibilityRole="button"
+        accessibilityLabel="Calls"
+        activeOpacity={0.85}
+        style={{
+          position: "absolute",
+          right: 20,
+          bottom: 65 + insets.bottom + 20,
+          width: 58,
+          height: 58,
+          borderRadius: 29,
+          backgroundColor: colors.primary,
+          alignItems: "center",
+          justifyContent: "center",
+          shadowColor: "#000",
+          shadowOffset: { width: 0, height: 3 },
+          shadowOpacity: 0.25,
+          shadowRadius: 5,
+          elevation: 6,
+        }}
+      >
+        <Ionicons name="call" size={26} color="#FFFFFF" />
+      </TouchableOpacity>
+      <CoachTour
+        id="chats"
+        after="tabs"
+        steps={[
+          {
+            icon: "person-circle",
+            target: headerRef,
+            title: "Your profile",
+            body: "Tap your name to edit your profile, switch light or dark mode, replay the tour or log out. The bar shows how complete your profile is.",
+          },
+          {
+            icon: "people",
+            target: tabsRef,
+            title: "Friends and Explore",
+            body: "Friends shows your conversations. Explore helps you find new people. Tap someone to see their profile and send a message.",
+          },
+          {
+            icon: "call",
+            target: callFabRef,
+            title: "Free voice calls",
+            body: "Tap the call button to voice-call people you've chatted with. Calls use data or Wi-Fi, not airtime.",
+          },
+        ]}
       />
     </SafeAreaView>
   );

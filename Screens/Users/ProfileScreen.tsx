@@ -13,7 +13,12 @@ import {
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 
-import { getAuth } from "firebase/auth";
+import { getAuth, signOut } from "firebase/auth";
+import { removePushTokenFromUser } from "../../hooks/useRegisterPushToken";
+import { isBootstrapAdmin, isSafetyStaff } from "../../services/drivers";
+import { clearCaches } from "../../services/cache";
+import BusinessProfilePanel from "./BusinessProfilePanel";
+import DriverProfilePanel from "./DriverProfilePanel";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { db, storage } from "../../firebaseConfig";
 import { getDownloadURL, ref, uploadBytes, deleteObject } from "firebase/storage";
@@ -49,6 +54,34 @@ const ProfileScreen = () => {
   const [username, setUsername] = useState<string>("");
 
   const [isProfileDataLoading, setIsProfileDataLoading] = useState(true);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [isStaff, setIsStaff] = useState(false);
+  const [accountType, setAccountType] = useState<"personal" | "business" | "driver">("personal");
+  useEffect(() => {
+    isSafetyStaff(true).then((v) => setIsStaff(v || isBootstrapAdmin())).catch(() => setIsStaff(isBootstrapAdmin()));
+  }, []);
+
+  const handleLogout = () => {
+    Alert.alert("Log out?", "You'll need your email and password to sign back in.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Log out",
+        style: "destructive",
+        onPress: async () => {
+          setLoggingOut(true);
+          try {
+            await removePushTokenFromUser();
+            await clearCaches();
+            // The app switches to the sign-in screen automatically once auth state changes
+            await signOut(auth);
+          } catch (error: any) {
+            setLoggingOut(false);
+            Alert.alert("Couldn't log out", error?.message || "Please try again.");
+          }
+        },
+      },
+    ]);
+  };
   const [showThemeHint, setShowThemeHint] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -111,6 +144,7 @@ const ProfileScreen = () => {
         setAboutMe(data.aboutMe || "");
         setProfilePic(data.profilePic || null);
         setProfilePhotos(Array.isArray(data.profilePhotos) ? data.profilePhotos : []);
+        setAccountType(data.accountType === "business" || data.accountType === "driver" ? data.accountType : "personal");
       }
     } catch (error: any) {
       console.error("Error fetching profile:", error);
@@ -277,8 +311,28 @@ const ProfileScreen = () => {
           >
             <Ionicons name="arrow-back" size={FONT_SIZES.xxlarge} color={colors.textPrimary} />
           </TouchableOpacity>
-          <Text style={[styles.headerTitle, { flex: 1 }]}>Edit Profile</Text>
+          <Text style={[styles.headerTitle, { flex: 1 }]}>{accountType === "business" ? "Business profile" : accountType === "driver" ? "Driver profile" : "Edit Profile"}</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            {isStaff ? (
+              <TouchableOpacity
+                onPress={() => navigation.navigate("SafetyReviewListScreen")}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel="Safety team"
+                style={{ marginRight: 6 }}
+              >
+                <Ionicons name="shield-checkmark-outline" size={24} color={colors.primary} />
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity
+              onPress={() => navigation.navigate("WalkthroughScreen", { replay: true })}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="button"
+              accessibilityLabel="How Wiji works"
+              style={{ marginRight: 6 }}
+            >
+              <Ionicons name="help-circle-outline" size={24} color={colors.primary} />
+            </TouchableOpacity>
             <TouchableOpacity
               onPress={async () => {
                 if (theme === 'dark') {
@@ -330,54 +384,53 @@ const ProfileScreen = () => {
           </View>
         </View>
 
-        {showThemeHint === true && (
-          <View
-            style={{
-              position: 'absolute',
-              top: 56,
-              right: 12,
-              left: 16,
-              alignItems: 'flex-end',
-              zIndex: 10,
-            }}
-            pointerEvents="box-none"
-          >
-            {/* Pointer (triangle) pointing up at the theme toggle */}
-            <View
-              style={{
-                width: 0,
-                height: 0,
-                borderLeftWidth: 8,
-                borderRightWidth: 8,
-                borderBottomWidth: 10,
-                borderLeftColor: 'transparent',
-                borderRightColor: 'transparent',
-                borderBottomColor: colors.primary + '22',
-                marginRight: 20,
-              }}
-            />
-            <View
-              style={{
-                backgroundColor: colors.primary + '22',
-                paddingVertical: 10,
-                paddingHorizontal: 14,
-                borderRadius: 16,
-                borderTopRightRadius: 4,
-                maxWidth: 280,
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.15,
-                shadowRadius: 6,
-                elevation: 4,
-              }}
-            >
-              <Text style={{ fontSize: 13, color: colors.text }}>
-                Tap sun or moon to switch light or dark mode
-              </Text>
-            </View>
+        {/* Personal or business account: business mode swaps the profile for the shop's settings */}
+        <View style={{ marginBottom: 18 }}>
+          <Text style={[styles.label, { color: colors.text }]}>Account type</Text>
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            {([
+              { key: "personal", icon: "person-outline", title: "Personal", sub: "Chat, ride, pay" },
+              { key: "business", icon: "storefront-outline", title: "Business", sub: "Sell, take orders" },
+              { key: "driver", icon: "car-sport-outline", title: "Driver", sub: "Drive and earn" },
+            ] as const).map((o) => {
+              const on = accountType === o.key;
+              return (
+                <TouchableOpacity
+                  key={o.key}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: on }}
+                  onPress={async () => {
+                    if (!user || on) return;
+                    setAccountType(o.key);
+                    try {
+                      await setDoc(doc(db, "users", user.uid), { accountType: o.key }, { merge: true });
+                    } catch (e: any) {
+                      Alert.alert("Couldn't switch", e.message);
+                    }
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: 12,
+                    borderRadius: 14,
+                    borderWidth: 2,
+                    borderColor: on ? colors.primary : colors.borderColor,
+                    backgroundColor: on ? (colors.cardHighlight || colors.cardBackground) : (colors.cardBackground || colors.background),
+                  }}
+                >
+                  <Ionicons name={o.icon} size={22} color={on ? colors.primary : colors.text} />
+                  <Text style={{ color: colors.text, fontWeight: "800", marginTop: 6 }}>{o.title}</Text>
+                  <Text style={{ color: colors.secondaryText || colors.text, fontSize: 12 }}>{o.sub}</Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
-        )}
+        </View>
 
+        {accountType === "business" && user ? (
+          <BusinessProfilePanel uid={user.uid} colors={colors} />
+        ) : accountType === "driver" && user ? (
+          <DriverProfilePanel uid={user.uid} colors={colors} />
+        ) : (<>
         {/* Tinder-style profile completion progress */}
         <View style={[styles.progressCard, { backgroundColor: colors.cardBackground || colors.background, borderColor: colors.borderColor }]}>
           <View style={styles.progressHeader}>
@@ -489,6 +542,35 @@ const ProfileScreen = () => {
 
         <TouchableOpacity onPress={handleSave} style={styles.saveButton} disabled={loading}>
           {loading ? <ActivityIndicator color={colors.activeFilterText} /> : <Text style={styles.saveButtonText}>Save Profile</Text>}
+        </TouchableOpacity>
+
+        </>)}
+
+        <TouchableOpacity
+          onPress={handleLogout}
+          disabled={loading || loggingOut}
+          accessibilityRole="button"
+          style={{
+            marginTop: 16,
+            marginBottom: 32,
+            paddingVertical: 14,
+            borderRadius: 12,
+            borderWidth: 1,
+            borderColor: colors.error,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+          }}
+        >
+          {loggingOut ? (
+            <ActivityIndicator color={colors.error} />
+          ) : (
+            <>
+              <Ionicons name="log-out-outline" size={20} color={colors.error} />
+              <Text style={{ color: colors.error, fontSize: 16, fontWeight: "700" }}>Log out</Text>
+            </>
+          )}
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
