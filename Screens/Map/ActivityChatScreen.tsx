@@ -1,5 +1,6 @@
 // ActivityChatScreen – matches ChatRoomScreen: layout, attach button, media upload, unread tracking
 import React, { useEffect, useState, useRef, useCallback } from 'react';
+import ChatBackground from "../../components/ChatBackground";
 import {
   View,
   Text,
@@ -719,16 +720,19 @@ export default function ActivityChatScreen() {
         </View>
       ) : null}
 
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        keyExtractor={(item) => item.id}
-        renderItem={renderMessage}
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={[styles.messagesList, { paddingBottom: inputBarHeight + insets.bottom + 12 }]}
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-        onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
-      />
+      <View style={{ flex: 1 }}>
+        <ChatBackground />
+              <FlatList
+                ref={flatListRef}
+                data={messages}
+                keyExtractor={(item) => item.id}
+                renderItem={renderMessage}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={[styles.messagesList, { paddingBottom: inputBarHeight + insets.bottom + 12 }]}
+                onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+                onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
+              />
+      </View>
 
       <View
         style={[styles.inputContainer, { paddingBottom: Math.max(insets.bottom, 25) }]}

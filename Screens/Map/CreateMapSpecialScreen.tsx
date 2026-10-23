@@ -67,6 +67,25 @@ export default function CreateMapSpecialScreen() {
   const [dealTimeUtc, setDealTimeUtc] = useState('12:00');
   const [weekdays, setWeekdays] = useState<number[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [price, setPrice] = useState('');
+  // Deals belong to a verified business: they're pinned at the shop and can be bought in the app
+  const [biz, setBiz] = useState<any | null | undefined>(undefined);
+
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    getDoc(doc(db, 'businesses', uid))
+      .then((s) => {
+        const b = s.exists() ? s.data() : null;
+        setBiz(b && b.active ? b : null);
+        if (!b || !b.active) {
+          Alert.alert('Verified businesses only', 'Verify your business to post deals on the map.', [
+            { text: 'OK', onPress: () => navigation.goBack() },
+          ]);
+        }
+      })
+      .catch(() => setBiz(null));
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -221,7 +240,16 @@ export default function CreateMapSpecialScreen() {
       Alert.alert('Title required', 'Enter a short title for your deal or special.');
       return;
     }
-    if (!locationAddress.trim()) {
+    const priceValue = price.trim() ? Number(price.replace(',', '.')) : null;
+    if (priceValue !== null && (!Number.isFinite(priceValue) || priceValue < 1 || priceValue > 20000)) {
+      Alert.alert('Check the price', 'Enter a price between R1 and R20,000, or leave it empty.');
+      return;
+    }
+    if (!biz) {
+      Alert.alert('Verified businesses only', 'Verify your business to post deals on the map.');
+      return;
+    }
+    if (!biz && !locationAddress.trim()) {
       Alert.alert('Location required', 'Search and select a place, or use the locate button (same as creating an activity).');
       return;
     }
@@ -236,16 +264,16 @@ export default function CreateMapSpecialScreen() {
     }
 
     const bias = biasCoords();
-    if (!selectedPlaceId && !bias) {
+    if (!biz && !selectedPlaceId && !bias) {
       Alert.alert('Location unavailable', 'Enable location or choose a place from search.');
       return;
     }
 
     setSubmitting(true);
     try {
-      let pinLat: number | undefined;
-      let pinLng: number | undefined;
-      if (selectedPlaceId) {
+      let pinLat: number | undefined = biz?.latitude;
+      let pinLng: number | undefined = biz?.longitude;
+      if (!biz && selectedPlaceId) {
         const placeCoords = await getPlaceLatLng(selectedPlaceId);
         if (placeCoords) {
           pinLat = placeCoords.lat;
@@ -263,7 +291,7 @@ export default function CreateMapSpecialScreen() {
         return;
       }
 
-      let resolvedAddress = locationAddress.trim();
+      let resolvedAddress = biz?.address || locationAddress.trim();
       if (!resolvedAddress && bias) {
         resolvedAddress = await getLocationAddress(bias.lat, bias.lng);
       }
@@ -288,7 +316,10 @@ export default function CreateMapSpecialScreen() {
         latitude: pinLat,
         longitude: pinLng,
         createdBy: uid,
-        creatorName,
+        creatorName: biz?.name || creatorName,
+        businessId: uid,
+        businessName: biz?.name || creatorName,
+        ...(priceValue !== null ? { priceCents: Math.round(priceValue * 100) } : {}),
         weekdays,
         active: true,
         createdAt: serverTimestamp(),
@@ -315,7 +346,7 @@ export default function CreateMapSpecialScreen() {
         <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={12} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Add location deal</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>Add a deal</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -378,6 +409,24 @@ export default function CreateMapSpecialScreen() {
           ) : null}
         </View>
 
+        <Text style={[styles.label, { color: colors.text }]}>Deal price (optional)</Text>
+        <TextInput
+          style={[styles.input, { backgroundColor: colors.card, color: colors.text, borderColor: colors.border }]}
+          placeholder="e.g. 45 (so customers can buy it in the app)"
+          placeholderTextColor={colors.textSecondary}
+          value={price}
+          onChangeText={(t) => setPrice(t.replace(/[^\d.,]/g, ''))}
+          keyboardType="decimal-pad"
+          maxLength={8}
+        />
+
+        {biz ? (
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+            <Ionicons name="storefront" size={18} color={colors.primary} />
+            <Text style={{ color: colors.text, flex: 1 }}>Pinned at {biz.name}: {biz.address}</Text>
+          </View>
+        ) : null}
+        {biz ? null : (<>
         <Text style={[styles.label, { color: colors.text }]}>Location *</Text>
         <View style={{ marginBottom: 8, zIndex: 1000 }}>
           <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -445,6 +494,7 @@ export default function CreateMapSpecialScreen() {
         {locationLoading && (
           <Text style={[styles.subtle, { color: colors.textSecondary }]}>Getting your current location...</Text>
         )}
+        </>)}
 
         <Text style={[styles.label, { color: colors.text }]}>Deal time (UTC) *</Text>
         <TextInput

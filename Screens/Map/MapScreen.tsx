@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
+import CoachTour from '../../components/CoachTour';
 import {
   View,
   Text,
@@ -25,6 +26,7 @@ import MapView, {
   PROVIDER_GOOGLE,
   Callout,
 } from 'react-native-maps';
+import ThemedMapView from "../../components/ThemedMapView";
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
@@ -54,7 +56,8 @@ import { db, storage, functions } from '../../firebaseConfig';
 import { httpsCallable } from 'firebase/functions';
 import * as ImagePicker from 'expo-image-picker';
 import { Video, ResizeMode } from 'expo-av';
-import { TabView, SceneMap, TabBar } from 'react-native-tab-view';
+import CreateActivitySheet from './CreateActivitySheet';
+import { TabView, TabBar } from 'react-native-tab-view';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 /** Match App.tsx tab bar so FABs sit above it */
@@ -72,27 +75,6 @@ const TAB_BAR_HEIGHT = 50;
 /** Height of the memories strip (padding + minHeight) so My activities list can add top padding and avoid overlap */
 const MEMORIES_STRIP_HEIGHT = 108;
 
-/** Google Maps night mode style – use with customMapStyle when theme is dark (blue accents) */
-const MAP_DARK_STYLE = [
-  { elementType: 'geometry', stylers: [{ color: '#242f3e' }] },
-  { elementType: 'labels.text.stroke', stylers: [{ color: '#242f3e' }] },
-  { elementType: 'labels.text.fill', stylers: [{ color: '#6b8cae' }] },
-  { featureType: 'administrative.locality', elementType: 'labels.text.fill', stylers: [{ color: '#93c5fd' }] },
-  { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#93c5fd' }] },
-  { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#263c3f' }] },
-  { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [{ color: '#6b9a76' }] },
-  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#38414e' }] },
-  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#212a37' }] },
-  { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: '#9ca5b3' }] },
-  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#3d4f5e' }] },
-  { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#1f2835' }] },
-  { featureType: 'road.highway', elementType: 'labels.text.fill', stylers: [{ color: '#bfdbfe' }] },
-  { featureType: 'transit', elementType: 'geometry', stylers: [{ color: '#2f3948' }] },
-  { featureType: 'transit.station', elementType: 'labels.text.fill', stylers: [{ color: '#93c5fd' }] },
-  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#17263c' }] },
-  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#5c7c9e' }] },
-  { featureType: 'water', elementType: 'labels.text.stroke', stylers: [{ color: '#17263c' }] },
-];
 
 type NavigationProp = StackNavigationProp<RootStackParamList>;
 
@@ -166,6 +148,19 @@ interface MapSpecial {
   weekdays: number[];
   active?: boolean;
   distance?: number;
+  businessId?: string;
+  priceCents?: number;
+}
+
+/** Verified business shown on the map (businesses/{ownerUid}) */
+interface MapBusiness {
+  id: string;
+  name: string;
+  category?: string;
+  latitude: number;
+  longitude: number;
+  isOpen?: boolean;
+  distance?: number;
 }
 
 const UTC_WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -203,6 +198,12 @@ export default function MapScreen() {
   const fabBottom = TAB_BAR_CONTENT_HEIGHT + insets.bottom + FAB_BOTTOM_SPACING;
   const modalBottomSafeSpace = Math.max(insets.bottom, Platform.OS === 'android' ? 28 : 0);
   const mapRef = useRef<MapView>(null);
+  // First-time tour targets
+  const tourAddRef = useRef<View>(null);
+  const tourDealRef = useRef<View>(null);
+  const tourLocateRef = useRef<View>(null);
+  const tourRideRef = useRef<View>(null);
+  const tourTabsRef = useRef<View>(null);
   const auth = getAuth();
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const followUserRef = useRef(true); // Use ref to access latest followUser value in callbacks
@@ -219,7 +220,6 @@ export default function MapScreen() {
   const [selectedActivity, setSelectedActivity] = useState<Activity | null>(null);
   const [showActivitiesList, setShowActivitiesList] = useState(false);
   const [showMemoryActivityPicker, setShowMemoryActivityPicker] = useState(false);
-  const [activityListTab, setActivityListTab] = useState<'activities' | 'specials'>('activities');
   const [followUser, setFollowUser] = useState(true); // Track if map should auto-follow user
   const [showParticipantsList, setShowParticipantsList] = useState(false);
   const [participantsData, setParticipantsData] = useState<ParticipantData[]>([]);
@@ -236,6 +236,7 @@ export default function MapScreen() {
   ]);
   const [highlightedMemoryLocation, setHighlightedMemoryLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [mapSpecials, setMapSpecials] = useState<MapSpecial[]>([]);
+  const [mapBusinesses, setMapBusinesses] = useState<MapBusiness[]>([]);
   const [selectedMapSpecial, setSelectedMapSpecial] = useState<MapSpecial | null>(null);
   const [unreadByActivityId, setUnreadByActivityId] = useState<Record<string, number>>({});
   const [joinRequestsForSelected, setJoinRequestsForSelected] = useState<{ id: string; userId: string; userName: string; userPhoto?: string; requestedAt: any }[]>([]);
@@ -282,25 +283,15 @@ export default function MapScreen() {
   const activitiesForMap = activities.filter((a) => !isActivityExpired(a));
 
   const mapSpecialsForMap = mapSpecials.filter((s) => s.active !== false);
+  // Let custom markers draw, then stop tracking view changes (otherwise Android redraws them constantly and they flicker)
+  const markersKey = `${tabIndex}|${theme}|${activitiesForMap.map((a) => a.id).join(',')}|${mapBusinesses.map((b) => `${b.id}${b.isOpen}`).join(',')}|${mapSpecialsForMap.map((x) => x.id).join(',')}`;
+  const [trackMarkers, setTrackMarkers] = useState(true);
+  useEffect(() => {
+    setTrackMarkers(true);
+    const t = setTimeout(() => setTrackMarkers(false), 1000);
+    return () => clearTimeout(t);
+  }, [markersKey]);
 
-  // Form states for activity
-  const [activityTitle, setActivityTitle] = useState('');
-  const [activityDescription, setActivityDescription] = useState('');
-  const [activityType, setActivityType] = useState<ActivityType>('social');
-  const [activityDate, setActivityDate] = useState<Date>(new Date());
-  const [activityTime, setActivityTime] = useState<Date>(new Date());
-  const [activityDateInput, setActivityDateInput] = useState<string>('');
-  const [activityTimeInput, setActivityTimeInput] = useState<string>('');
-  const [activityEndDate, setActivityEndDate] = useState<Date>(new Date());
-  const [activityEndTime, setActivityEndTime] = useState<Date>(new Date());
-  const [activityEndDateInput, setActivityEndDateInput] = useState<string>('');
-  const [activityEndTimeInput, setActivityEndTimeInput] = useState<string>('');
-  const [activityLocation, setActivityLocation] = useState<string>('');
-  const [locationLoading, setLocationLoading] = useState(false);
-  const [locationSuggestions, setLocationSuggestions] = useState<PlaceSuggestion[]>([]);
-  const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
-  const [showLocationSuggestions, setShowLocationSuggestions] = useState(false);
-  const [activityRequiresApproval, setActivityRequiresApproval] = useState(false);
 
   const GOOGLE_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyDR5JhBnTT53KmUwNQI6QcWG5RjY5sdYRM';
 
@@ -571,6 +562,36 @@ export default function MapScreen() {
     return () => unsubscribe();
   }, [userLocation]);
 
+  // Nearby verified businesses (15 km): shops customers can order from
+  useEffect(() => {
+    if (!userLocation) return;
+    const centerLat = userLocation.coords.latitude;
+    const centerLng = userLocation.coords.longitude;
+    const radiusDegrees = 15 / 111;
+    const q = query(
+      collection(db, 'businesses'),
+      where('latitude', '>=', centerLat - radiusDegrees),
+      where('latitude', '<=', centerLat + radiusDegrees)
+    );
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const list: MapBusiness[] = [];
+        snapshot.docs.forEach((d) => {
+          const b = d.data();
+          if (b.active !== true || !Number.isFinite(b.latitude) || !Number.isFinite(b.longitude)) return;
+          const distance = calculateDistance(centerLat, centerLng, b.latitude, b.longitude);
+          if (distance <= 15) {
+            list.push({ id: d.id, name: b.name || 'Shop', category: b.category, latitude: b.latitude, longitude: b.longitude, isOpen: b.isOpen !== false, distance: Math.round(distance * 10) / 10 });
+          }
+        });
+        setMapBusinesses(list);
+      },
+      (err) => console.error('Map businesses snapshot error:', err)
+    );
+    return () => unsubscribe();
+  }, [userLocation]);
+
   // Nearby map deals / specials (15 km) — same latitude band query as activities, then haversine
   useEffect(() => {
     if (!userLocation) return;
@@ -611,6 +632,8 @@ export default function MapScreen() {
               weekdays: Array.isArray(data.weekdays) ? data.weekdays : [],
               active: data.active !== false,
               distance: Math.round(distance * 10) / 10,
+              businessId: data.businessId,
+              priceCents: data.priceCents,
             });
           }
         }
@@ -808,197 +831,6 @@ export default function MapScreen() {
     }
   };
 
-  // Google Places Autocomplete functions
-  async function fetchSuggestions(text: string): Promise<PlaceSuggestion[]> {
-    if (!GOOGLE_KEY || !text.trim()) {
-      console.log('No API key or empty text');
-      return [];
-    }
-
-    // Build URL with location bias if user location is available
-    let url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(
-      text
-    )}&key=${GOOGLE_KEY}`;
-
-    // Add location bias to prioritize results within 50km of user
-    if (userLocation) {
-      const lat = userLocation.coords.latitude;
-      const lng = userLocation.coords.longitude;
-      const radius = 50000; // 50km in meters
-      url += `&location=${lat},${lng}&radius=${radius}&strictbounds=true`;
-    }
-
-    try {
-      console.log('Fetching suggestions for:', text);
-      if (userLocation) {
-        console.log('With location bias:', userLocation.coords.latitude, userLocation.coords.longitude);
-      }
-      const res = await fetch(url);
-      const data = await res.json();
-      console.log('API response:', data);
-      if (data.error_message) {
-        console.error('Google Places API error:', data.error_message);
-        return [];
-      }
-      const suggestions = (data?.predictions || []).map((p: any) => ({
-        place_id: p.place_id,
-        description: p.description,
-      }));
-      console.log('Parsed suggestions:', suggestions.length);
-      return suggestions;
-    } catch (error) {
-      console.error('Error fetching suggestions:', error);
-      return [];
-    }
-  }
-
-  async function getPlaceLatLng(place_id: string): Promise<{ lat: number; lng: number } | null> {
-    if (!GOOGLE_KEY) return null;
-    try {
-      const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place_id}&key=${GOOGLE_KEY}`;
-      const res = await fetch(url);
-      const data = await res.json();
-      const loc = data?.result?.geometry?.location;
-      if (!loc) return null;
-      return { lat: loc.lat, lng: loc.lng };
-    } catch {
-              return null;
-            }
-  }
-
-  const handleLocationChange = async (text: string) => {
-    setActivityLocation(text);
-    setSelectedPlaceId(null);
-    if (text.trim().length > 1) {
-      try {
-        const results = await fetchSuggestions(text);
-        console.log('Fetched suggestions:', results.length);
-        setLocationSuggestions(results);
-        setShowLocationSuggestions(results.length > 0);
-          } catch (error) {
-        console.error('Error fetching suggestions:', error);
-        setLocationSuggestions([]);
-        setShowLocationSuggestions(false);
-      }
-    } else {
-      setLocationSuggestions([]);
-      setShowLocationSuggestions(false);
-    }
-  };
-
-  const handleSelectLocation = async (suggestion: PlaceSuggestion) => {
-    setActivityLocation(suggestion.description);
-    setSelectedPlaceId(suggestion.place_id);
-    setLocationSuggestions([]);
-    setShowLocationSuggestions(false);
-  };
-
-  const handleCreateActivity = async () => {
-    if (!auth.currentUser || !userLocation) {
-      Alert.alert('Error', 'You must be logged in and have location access.');
-      return;
-    }
-
-    if (!activityTitle.trim()) {
-      Alert.alert('Error', 'Please enter a title for your activity.');
-      return;
-          }
-
-          try {
-      // Get user name
-      let userName = 'Unknown';
-      try {
-        const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-        if (userDoc.exists()) {
-          userName = userDoc.data().username || userDoc.data().displayName || auth.currentUser.displayName || 'Unknown';
-        }
-      } catch (e) {
-        userName = auth.currentUser.displayName || 'Unknown';
-        }
-
-      // Combine start date and time
-      const combinedStartDateTime = new Date(activityDate);
-      combinedStartDateTime.setHours(activityTime.getHours());
-      combinedStartDateTime.setMinutes(activityTime.getMinutes());
-
-      // Combine end date and time
-      const combinedEndDateTime = new Date(activityEndDate);
-      combinedEndDateTime.setHours(activityEndTime.getHours());
-      combinedEndDateTime.setMinutes(activityEndTime.getMinutes());
-
-      // Validate that end time is after start time
-      if (combinedEndDateTime <= combinedStartDateTime) {
-        Alert.alert('Error', 'End date and time must be after start date and time.');
-        return;
-      }
-
-      // Get location address and coordinates
-      let activityLat = userLocation.coords.latitude;
-      let activityLng = userLocation.coords.longitude;
-      let locationAddress = activityLocation;
-
-      // If a place was selected, use its coordinates
-      if (selectedPlaceId) {
-        const placeCoords = await getPlaceLatLng(selectedPlaceId);
-        if (placeCoords) {
-          activityLat = placeCoords.lat;
-          activityLng = placeCoords.lng;
-        }
-      }
-
-      // If no location was entered, use current location address
-      if (!locationAddress) {
-        locationAddress = await getLocationAddress(
-          userLocation.coords.latitude,
-          userLocation.coords.longitude
-        );
-      }
-
-      const activityRef = await addDoc(collection(db, 'activities'), {
-        title: activityTitle.trim(),
-        activityType: activityType,
-        latitude: activityLat,
-        longitude: activityLng,
-        location: locationAddress,
-        createdBy: auth.currentUser.uid,
-        createdByName: userName,
-        createdAt: serverTimestamp(),
-        participants: [auth.currentUser.uid],
-        startTime: Timestamp.fromDate(combinedStartDateTime),
-        endTime: Timestamp.fromDate(combinedEndDateTime),
-        visibility: 'everyone',
-        requiresApproval: activityRequiresApproval,
-      });
-      await setDoc(doc(db, 'activityChats', activityRef.id), {
-        activityId: activityRef.id,
-        activityTitle: activityTitle.trim(),
-        createdAt: serverTimestamp(),
-      });
-
-      Alert.alert('Success', 'Activity created!');
-      setShowCreateActivity(false);
-      setActivityTitle('');
-      const now = new Date();
-      setActivityDate(now);
-      setActivityTime(now);
-      setActivityDateInput('');
-      setActivityTimeInput('');
-      // Set end date/time to 2 hours after start by default
-      const endDateTime = new Date(now);
-      endDateTime.setHours(endDateTime.getHours() + 2);
-      setActivityEndDate(endDateTime);
-      setActivityEndTime(endDateTime);
-      setActivityEndDateInput('');
-      setActivityEndTimeInput('');
-      setActivityLocation('');
-      setSelectedPlaceId(null);
-      setLocationSuggestions([]);
-      setShowLocationSuggestions(false);
-      setActivityRequiresApproval(false);
-    } catch (error: any) {
-      console.error('Error creating activity:', error);
-    }
-  };
 
   const handleJoinActivity = async (activity: Activity) => {
     if (!auth.currentUser) {
@@ -1521,24 +1353,25 @@ export default function MapScreen() {
 
   /** Map content (MapView + markers) - shared so we can render it in Map tab (interactive) or as background (My activities) */
   const renderMapContent = (isInteractive: boolean) => (
-    <MapView
+    <ThemedMapView
       ref={isInteractive ? mapRef : undefined}
       provider={PROVIDER_GOOGLE}
       style={StyleSheet.absoluteFillObject}
       initialRegion={region}
-      customMapStyle={theme === 'dark' ? MAP_DARK_STYLE : undefined}
       onRegionChangeComplete={(newRegion) => {
-        if (!isProgrammaticUpdateRef.current) {
+        if (!isProgrammaticUpdateRef.current && followUserRef.current) {
           setFollowUser(false);
           followUserRef.current = false;
         }
         isProgrammaticUpdateRef.current = false;
       }}
       onPanDrag={() => {
+        if (!followUserRef.current) return;
         setFollowUser(false);
         followUserRef.current = false;
       }}
       onPress={() => {
+        if (!followUserRef.current) return;
         setFollowUser(false);
         followUserRef.current = false;
       }}
@@ -1565,6 +1398,7 @@ export default function MapScreen() {
             longitude: activity.longitude,
           }}
           onPress={() => setSelectedActivity(activity)}
+          tracksViewChanges={trackMarkers}
         >
           <View style={[localStyles.markerContainer, { backgroundColor: getActivityColor(activity.activityType) }]}>
             <Ionicons name={getActivityIcon(activity.activityType) as any} size={24} color="#FFFFFF" />
@@ -1587,11 +1421,30 @@ export default function MapScreen() {
           </Callout>
         </Marker>
       ))}
+      {mapBusinesses.map((b) => (
+        <Marker
+          key={`biz_${b.id}`}
+          coordinate={{ latitude: b.latitude, longitude: b.longitude }}
+          onPress={() => navigation.navigate('BusinessShopScreen', { businessId: b.id })}
+          title={b.name}
+          description={`${b.category || 'Shop'}${b.isOpen ? '' : ' · closed now'} · ${b.distance} km`}
+          tracksViewChanges={trackMarkers}
+        >
+          <View style={[localStyles.markerContainer, { backgroundColor: b.isOpen ? '#6C2BD9' : '#8A8698' }]}>
+            <Ionicons name="storefront" size={20} color="#FFFFFF" />
+          </View>
+        </Marker>
+      ))}
       {mapSpecialsForMap.map((special) => (
         <Marker
           key={`special_${special.id}`}
           coordinate={{ latitude: special.latitude, longitude: special.longitude }}
-          onPress={() => setSelectedMapSpecial(special)}
+          onPress={() =>
+            special.businessId
+              ? navigation.navigate('BusinessShopScreen', { businessId: special.businessId })
+              : setSelectedMapSpecial(special)
+          }
+          tracksViewChanges={trackMarkers}
         >
           <View style={[localStyles.markerContainer, { backgroundColor: '#E65100' }]}>
             <Ionicons name="pricetag" size={22} color="#FFFFFF" />
@@ -1632,7 +1485,7 @@ export default function MapScreen() {
           <View style={[localStyles.memoryHighlightMarker]} />
         </Marker>
       )}
-    </MapView>
+    </ThemedMapView>
   );
 
   /** Map as non-interactive background (only when My activities tab is active so list shows over it) */
@@ -1669,15 +1522,17 @@ export default function MapScreen() {
         </View>
         <View style={[localStyles.specialsFabContainer, { bottom: fabBottom }]} pointerEvents="box-none">
           <TouchableOpacity
-            style={[localStyles.actionButton, { backgroundColor: '#E65100' }]}
+            ref={tourDealRef}
+            style={[localStyles.actionButton, { backgroundColor: '#FFFFFF' }]}
             onPress={() => {
+              // Every deal within 50 km, closest first (verified businesses can post from there too)
               const lat = userLocation?.coords.latitude ?? region.latitude;
               const lng = userLocation?.coords.longitude ?? region.longitude;
-              navigation.navigate('CreateMapSpecialScreen', { latitude: lat, longitude: lng });
+              navigation.navigate('NearbyDealsScreen', { latitude: lat, longitude: lng });
             }}
-            accessibilityLabel="Add location deal or special"
+            accessibilityLabel="Deals near you"
           >
-            <Ionicons name="pricetag" size={24} color="#FFFFFF" />
+            <Ionicons name="pricetag" size={24} color="#6C2BD9" />
           </TouchableOpacity>
         </View>
         {myOngoingActivities.length > 0 && (
@@ -1692,12 +1547,22 @@ export default function MapScreen() {
         )}
         <View style={[localStyles.actionButtons, { bottom: fabBottom }]} pointerEvents="box-none">
           <TouchableOpacity
+            ref={tourRideRef}
+            style={[localStyles.actionButton, { backgroundColor: '#15102B', marginBottom: 10 }]}
+            onPress={() => navigation.navigate('RideRequestScreen')}
+            accessibilityLabel="Get a ride"
+          >
+            <Ionicons name="car" size={24} color="#3EF0D0" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            ref={tourAddRef}
             style={[localStyles.actionButton, { backgroundColor: colors.primary }]}
             onPress={() => setShowCreateActivity(true)}
           >
             <Ionicons name="add" size={24} color="#FFFFFF" />
           </TouchableOpacity>
           <TouchableOpacity
+            ref={tourLocateRef}
             style={[localStyles.actionButton, { backgroundColor: colors.primary, marginTop: 10 }]}
             onPress={centerOnUser}
           >
@@ -1706,7 +1571,6 @@ export default function MapScreen() {
           <TouchableOpacity
             style={[localStyles.actionButton, { backgroundColor: colors.primary, marginTop: 10 }]}
             onPress={() => {
-              setActivityListTab('activities');
               setShowActivitiesList(true);
             }}
           >
@@ -1862,10 +1726,9 @@ export default function MapScreen() {
     </View>
   );
 
-  const renderScene = SceneMap({
-    map: MapRoute,
-    'my-activities': MyActivitiesRoute,
-  });
+  // Call the scenes as plain functions: SceneMap with components created inside this render made React
+  // throw away and rebuild the whole MapView on every state change (location, data, drags), so the map flickered and jumped.
+  const renderScene = ({ route }: { route: { key: string } }) => (route.key === 'map' ? MapRoute() : MyActivitiesRoute());
 
   return (
     <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
@@ -1889,13 +1752,13 @@ export default function MapScreen() {
         navigationState={{ index: tabIndex, routes: tabRoutes }}
         renderScene={renderScene}
         onIndexChange={setTabIndex}
-        swipeEnabled
+        swipeEnabled={tabIndex !== 0}
         initialLayout={{ width: Dimensions.get('window').width }}
         style={{ flex: 1, backgroundColor: 'transparent' }}
         renderTabBar={(props) => {
           const activityIdsWithMemories = Array.from(new Set(memories.map((m) => m.activityId)));
           return (
-            <View style={{ backgroundColor: colors.background, borderBottomWidth: 1, borderBottomColor: colors.borderColor }}>
+            <View ref={tourTabsRef} collapsable={false} style={{ backgroundColor: colors.background, borderBottomWidth: 1, borderBottomColor: colors.borderColor }}>
               <TabBar
                 {...props}
                 style={{ backgroundColor: 'transparent', elevation: 0 }}
@@ -2538,9 +2401,6 @@ export default function MapScreen() {
                 <Text style={[localStyles.listHeaderText, { color: colors.text }]}>
                   {activitiesForMap.length} {activitiesForMap.length === 1 ? 'Activity' : 'Activities'} within 50km
                 </Text>
-                <Text style={{ color: colors.textSecondary, fontSize: 13, marginTop: 2 }}>
-                  {mapSpecialsForMap.length} {mapSpecialsForMap.length === 1 ? 'Special' : 'Specials'} within 15km
-                </Text>
               </View>
               <TouchableOpacity
                 onPress={() => setShowActivitiesList(false)}
@@ -2550,50 +2410,7 @@ export default function MapScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Toggle between activities and specials */}
-            <View style={[localStyles.listToggleRow, { borderBottomColor: colors.border }]}>
-              <TouchableOpacity
-                style={[
-                  localStyles.listToggleButton,
-                  {
-                    backgroundColor: activityListTab === 'activities' ? colors.primary : colors.background,
-                    borderColor: activityListTab === 'activities' ? colors.primary : colors.border,
-                  },
-                ]}
-                onPress={() => setActivityListTab('activities')}
-              >
-                <Text
-                  style={{
-                    color: activityListTab === 'activities' ? '#FFF' : colors.text,
-                    fontWeight: '700',
-                  }}
-                >
-                  Activities
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  localStyles.listToggleButton,
-                  {
-                    backgroundColor: activityListTab === 'specials' ? colors.primary : colors.background,
-                    borderColor: activityListTab === 'specials' ? colors.primary : colors.border,
-                  },
-                ]}
-                onPress={() => setActivityListTab('specials')}
-              >
-                <Text
-                  style={{
-                    color: activityListTab === 'specials' ? '#FFF' : colors.text,
-                    fontWeight: '700',
-                  }}
-                >
-                  Specials
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {activityListTab === 'activities' ? (
-              /* Activities list */
+            {              /* Activities list */
               loading ? (
               <View style={localStyles.loadingContainer}>
                 <ActivityIndicator size="large" color={colors.primary} />
@@ -2677,385 +2494,58 @@ export default function MapScreen() {
                 contentContainerStyle={{ paddingBottom: 100 }}
               />
               )
-            ) : (
-              mapSpecialsForMap.length === 0 ? (
-                <View style={localStyles.emptyContainer}>
-                  <Ionicons name="pricetag-outline" size={64} color={colors.textSecondary} />
-                  <Text style={[localStyles.emptyText, { color: colors.textSecondary }]}>
-                    No specials found within 15km
-                  </Text>
-                  <Text style={[localStyles.emptySubtext, { color: colors.textSecondary }]}>
-                    Add one from the map tag button.
-                  </Text>
-                </View>
-              ) : (
-                <FlatList
-                  data={mapSpecialsForMap}
-                  keyExtractor={(item) => item.id}
-                  renderItem={({ item }) => (
-                    <TouchableOpacity
-                      style={[localStyles.activityCard, { backgroundColor: colors.card }]}
-                      onPress={() => {
-                        setShowActivitiesList(false);
-                        setSelectedMapSpecial(item);
-                      }}
-                    >
-                      <View style={[localStyles.activityIconContainer, { backgroundColor: '#E65100' }]}>
-                        <Ionicons name="pricetag" size={24} color="#FFFFFF" />
-                      </View>
-                      <View style={localStyles.activityCardContent}>
-                        <Text style={[localStyles.activityCardTitle, { color: colors.text }]}>{item.title}</Text>
-                        <Text style={[localStyles.activityCardText, { color: colors.textSecondary }]} numberOfLines={1}>
-                          {(item.location || item.placeName || 'No location')}
-                        </Text>
-                        <View style={localStyles.activityCardMeta}>
-                          <Text style={[localStyles.activityCardMetaText, { color: colors.textSecondary }]}>
-                            {formatUtcWeekdays(item.weekdays)} (UTC)
-                          </Text>
-                        </View>
-                        <View style={localStyles.activityCardFooter}>
-                          <Text style={[localStyles.activityCardDistance, { color: colors.primary }]}>
-                            {item.distance} km away
-                          </Text>
-                          <Text style={[localStyles.activityCardCreator, { color: colors.textSecondary }]}>
-                            by {item.creatorName || 'Someone'}
-                          </Text>
-                        </View>
-                      </View>
-                    </TouchableOpacity>
-                  )}
-                  contentContainerStyle={{ paddingBottom: 100 }}
-                />
-              )
-            )}
+            }
           </View>
         </View>
       </Modal>
 
-      {/* Create activity modal */}
-      <Modal
+      {/* Create activity: guided steps (What → When → Where → Review) */}
+      <CreateActivitySheet
         visible={showCreateActivity}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowCreateActivity(false)}
-        onShow={() => {
-          // Reset form when modal opens
-          const now = new Date();
-          setActivityDate(now);
-          setActivityTime(now);
-          setActivityDateInput(now.toISOString().split('T')[0]);
-          setActivityTimeInput(`${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`);
-          // Set end date/time to 2 hours after start by default
-          const endDateTime = new Date(now);
-          endDateTime.setHours(endDateTime.getHours() + 2);
-          setActivityEndDate(endDateTime);
-          setActivityEndTime(endDateTime);
-          setActivityEndDateInput(endDateTime.toISOString().split('T')[0]);
-          setActivityEndTimeInput(`${endDateTime.getHours().toString().padStart(2, '0')}:${endDateTime.getMinutes().toString().padStart(2, '0')}`);
-          setActivityLocation('');
-          setSelectedPlaceId(null);
-          setLocationSuggestions([]);
-          setShowLocationSuggestions(false);
+        onClose={() => setShowCreateActivity(false)}
+        userLocation={userLocation ? { lat: userLocation.coords.latitude, lng: userLocation.coords.longitude } : null}
+        onCreated={(a) => {
+          setTabIndex(0);
+          setFollowUser(false);
+          followUserRef.current = false;
+          setTimeout(() => {
+            isProgrammaticUpdateRef.current = true;
+            mapRef.current?.animateToRegion({ latitude: a.lat, longitude: a.lng, latitudeDelta: 0.01, longitudeDelta: 0.01 }, 900);
+          }, 350);
         }}
-      >
-        <View style={localStyles.modalOverlay}>
-        <TouchableOpacity
-            style={StyleSheet.absoluteFill}
-            activeOpacity={1}
-            onPress={() => setShowCreateActivity(false)}
-          />
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={{ flex: 1, justifyContent: 'flex-end' }}
-          >
-            <View
-              style={[localStyles.bottomSheetContent, { backgroundColor: colors.card }]}
-              onStartShouldSetResponder={() => true}
-            >
-              {/* Handle bar */}
-              <View style={localStyles.handleBar} />
-              
-              {/* Header */}
-              <View style={[localStyles.listHeader, { backgroundColor: colors.card }]}>
-                <Text style={[localStyles.modalTitle, { color: colors.text }]}>Create Activity</Text>
-                <TouchableOpacity
-                  onPress={() => setShowCreateActivity(false)}
-                  style={localStyles.closeIconButton}
-                >
-                  <Ionicons name="close" size={24} color={colors.text} />
-        </TouchableOpacity>
-              </View>
-
-              <ScrollView
-                contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20 }}
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
-                nestedScrollEnabled
-              >
-                <Text style={[localStyles.label, { color: colors.text }]}>I want to *</Text>
-                <TextInput
-                  style={[localStyles.input, { backgroundColor: colors.background, color: colors.text }]}
-                  value={activityTitle}
-                  onChangeText={setActivityTitle}
-                  placeholder="go for Dinner, a jog, a movie, a hike, a drink, etc."
-                  placeholderTextColor={colors.textSecondary}
-                />
-
-                <Text style={[localStyles.label, { color: colors.text }]}>Date & Time *</Text>
-                <View style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
-                  <View style={{ flex: 1 }}>
-                    <TextInput
-                      style={[localStyles.input, { backgroundColor: colors.background, color: colors.text, paddingRight: 40 }]}
-                      value={activityDateInput || activityDate.toISOString().split('T')[0]}
-                      onChangeText={(text) => {
-                        // Update input value immediately for editing
-                        setActivityDateInput(text);
-                        // Try to parse and update date if valid
-                        if (text.match(/^\d{4}-\d{2}-\d{2}$/)) {
-                          const newDate = new Date(text);
-                          if (!isNaN(newDate.getTime())) {
-                            setActivityDate(newDate);
-                          }
-                        }
-                      }}
-                      onBlur={() => {
-                        // Validate on blur - if invalid, reset to current date
-                        if (!activityDateInput.match(/^\d{4}-\d{2}-\d{2}$/)) {
-                          setActivityDateInput(activityDate.toISOString().split('T')[0]);
-                        }
-                      }}
-                      placeholder="YYYY-MM-DD"
-                      placeholderTextColor={colors.textSecondary}
-                      keyboardType="numeric"
-                    />
-                    <View style={{ position: 'absolute', right: 12, top: 12, pointerEvents: 'none' }}>
-                      <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
-                    </View>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <TextInput
-                      style={[localStyles.input, { backgroundColor: colors.background, color: colors.text, paddingRight: 40 }]}
-                      value={activityTimeInput || `${activityTime.getHours().toString().padStart(2, '0')}:${activityTime.getMinutes().toString().padStart(2, '0')}`}
-                      onChangeText={(text) => {
-                        // Update input value immediately for editing
-                        setActivityTimeInput(text);
-                        // Try to parse and update time if valid
-                        if (text.match(/^\d{2}:\d{2}$/)) {
-                          const [hours, minutes] = text.split(':').map(Number);
-                          if (!isNaN(hours) && !isNaN(minutes) && hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
-                            const newTime = new Date(activityTime);
-                            newTime.setHours(hours, minutes);
-                            setActivityTime(newTime);
-                          }
-                        }
-                      }}
-                      onBlur={() => {
-                        // Validate on blur - if invalid, reset to current time
-                        if (!activityTimeInput.match(/^\d{2}:\d{2}$/)) {
-                          setActivityTimeInput(`${activityTime.getHours().toString().padStart(2, '0')}:${activityTime.getMinutes().toString().padStart(2, '0')}`);
-                        }
-                      }}
-                      placeholder="HH:MM"
-                      placeholderTextColor={colors.textSecondary}
-                      keyboardType="numeric"
-                    />
-                    <View style={{ position: 'absolute', right: 12, top: 12, pointerEvents: 'none' }}>
-                      <Ionicons name="time-outline" size={20} color={colors.textSecondary} />
-                    </View>
-                  </View>
-                </View>
-                <Text style={[localStyles.label, { color: colors.textSecondary, fontSize: 12, fontStyle: 'italic', marginTop: -4, marginBottom: 8 }]}>
-                  Format: Date (YYYY-MM-DD) and Time (HH:MM, 24-hour)
-            </Text>
-
-                <Text style={[localStyles.label, { color: colors.text }]}>End Date & Time *</Text>
-                <View style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
-                  <View style={{ flex: 1 }}>
-                    <TextInput
-                      style={[localStyles.input, { backgroundColor: colors.background, color: colors.text, paddingRight: 40 }]}
-                      value={activityEndDateInput || activityEndDate.toISOString().split('T')[0]}
-                      onChangeText={(text) => {
-                        setActivityEndDateInput(text);
-                        if (text.match(/^\d{4}-\d{2}-\d{2}$/)) {
-                          const newDate = new Date(text);
-                          if (!isNaN(newDate.getTime())) {
-                            setActivityEndDate(newDate);
-                          }
-                        }
-                      }}
-                      onBlur={() => {
-                        if (!activityEndDateInput.match(/^\d{4}-\d{2}-\d{2}$/)) {
-                          setActivityEndDateInput(activityEndDate.toISOString().split('T')[0]);
-                        }
-                      }}
-                      placeholder="YYYY-MM-DD"
-                      placeholderTextColor={colors.textSecondary}
-                      keyboardType="numeric"
-                    />
-                    <View style={{ position: 'absolute', right: 12, top: 12, pointerEvents: 'none' }}>
-                      <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
-          </View>
-        </View>
-                  <View style={{ flex: 1 }}>
-                    <TextInput
-                      style={[localStyles.input, { backgroundColor: colors.background, color: colors.text, paddingRight: 40 }]}
-                      value={activityEndTimeInput || `${activityEndTime.getHours().toString().padStart(2, '0')}:${activityEndTime.getMinutes().toString().padStart(2, '0')}`}
-                      onChangeText={(text) => {
-                        setActivityEndTimeInput(text);
-                        if (text.match(/^\d{2}:\d{2}$/)) {
-                          const [hours, minutes] = text.split(':').map(Number);
-                          if (!isNaN(hours) && !isNaN(minutes) && hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
-                            const newTime = new Date(activityEndTime);
-                            newTime.setHours(hours, minutes);
-                            setActivityEndTime(newTime);
-                          }
-                        }
-                      }}
-                      onBlur={() => {
-                        if (!activityEndTimeInput.match(/^\d{2}:\d{2}$/)) {
-                          setActivityEndTimeInput(`${activityEndTime.getHours().toString().padStart(2, '0')}:${activityEndTime.getMinutes().toString().padStart(2, '0')}`);
-                        }
-                      }}
-                      placeholder="HH:MM"
-                      placeholderTextColor={colors.textSecondary}
-                      keyboardType="numeric"
-                    />
-                    <View style={{ position: 'absolute', right: 12, top: 12, pointerEvents: 'none' }}>
-                      <Ionicons name="time-outline" size={20} color={colors.textSecondary} />
-                    </View>
-                  </View>
-                </View>
-                <Text style={[localStyles.label, { color: colors.textSecondary, fontSize: 12, fontStyle: 'italic', marginTop: -4, marginBottom: 8 }]}>
-                  Format: Date (YYYY-MM-DD) and Time (HH:MM, 24-hour)
-                </Text>
-
-                <Text style={[localStyles.label, { color: colors.text }]}>Location *</Text>
-                <View style={{ marginBottom: 8, zIndex: 1000 }}>
-                  <View style={{ flexDirection: 'row', gap: 10 }}>
-                    <View style={{ flex: 1, zIndex: 1000 }}>
-                      <TextInput
-                        style={[localStyles.input, { backgroundColor: colors.background, color: colors.text, marginBottom: 0 }]}
-                        value={activityLocation}
-                        onChangeText={handleLocationChange}
-                        placeholder="Search for an address..."
-                        placeholderTextColor={colors.textSecondary}
-                        editable={!locationLoading}
-                      />
-                      {showLocationSuggestions && locationSuggestions.length > 0 && (
-                        <View style={[localStyles.suggestionsContainer, { backgroundColor: colors.card, borderColor: colors.background }]}>
-                          <FlatList
-                            data={locationSuggestions}
-                            keyExtractor={(item) => item.place_id}
-                            renderItem={({ item }) => (
-        <TouchableOpacity
-                                style={[localStyles.suggestionItem, { borderBottomColor: colors.background }]}
-                                onPress={() => handleSelectLocation(item)}
-                              >
-                                <Ionicons name="location-outline" size={20} color={colors.textSecondary} style={{ marginRight: 8 }} />
-                                <Text style={[localStyles.suggestionText, { color: colors.text }]} numberOfLines={2}>
-                                  {item.description}
-                                </Text>
-                              </TouchableOpacity>
-                            )}
-                            nestedScrollEnabled
-                            keyboardShouldPersistTaps="handled"
-                            style={{ maxHeight: 200 }}
-                          />
-                        </View>
-                      )}
-                    </View>
-                    <TouchableOpacity
-                      style={[localStyles.input, { backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 16, minWidth: 50 }]}
-                      onPress={async () => {
-                        if (!userLocation) {
-                          Alert.alert('Error', 'Location not available. Please enable location permissions.');
-                          return;
-                        }
-                        setLocationLoading(true);
-                        try {
-                          const address = await getLocationAddress(
-                            userLocation.coords.latitude,
-                            userLocation.coords.longitude
-                          );
-                          setActivityLocation(address);
-                          setSelectedPlaceId(null);
-                          setLocationSuggestions([]);
-                          setShowLocationSuggestions(false);
-                        } catch (error) {
-                          console.error('Failed to get location address', error);
-                        } finally {
-                          setLocationLoading(false);
-                        }
-                      }}
-                      disabled={locationLoading || !userLocation}
-        >
-                      {locationLoading ? (
-                        <ActivityIndicator size="small" color="#FFFFFF" />
-                      ) : (
-          <Ionicons name="locate" size={24} color="#FFFFFF" />
-                      )}
-        </TouchableOpacity>
-                  </View>
-                </View>
-                {locationLoading && (
-                  <Text style={[localStyles.label, { color: colors.textSecondary, fontSize: 12, fontStyle: 'italic', marginTop: -4, marginBottom: 8 }]}>
-                    Getting your current location...
-                  </Text>
-                )}
-
-                <Text style={[localStyles.label, { color: colors.text }]}>Activity Type</Text>
-                <View style={localStyles.activityTypeContainer}>
-                  {(['food-and-drinks', 'night-life', 'outdoor', 'sightseeing', 'entertainment', 'shopping', 'wellness', 'social', 'fitness', 'other'] as ActivityType[]).map((type) => (
-                    <TouchableOpacity
-                      key={type}
-                      style={[
-                        localStyles.activityTypeButton,
-                        activityType === type && { backgroundColor: colors.primary },
-                      ]}
-                      onPress={() => setActivityType(type)}
-                    >
-                      <Text
-                        style={[
-                          localStyles.activityTypeText,
-                          { color: activityType === type ? '#FFFFFF' : colors.text },
-                        ]}
-                      >
-                        {getActivityTypeLabel(type)}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 16, paddingHorizontal: 4 }}>
-                  <Text style={{ fontSize: 16, color: colors.text, flex: 1 }}>
-                    Require approval to join (users request; you accept or decline)
-                  </Text>
-                  <Switch
-                    value={activityRequiresApproval}
-                    onValueChange={setActivityRequiresApproval}
-                    trackColor={{ false: colors.border, true: colors.primary }}
-                    thumbColor="#FFFFFF"
-                  />
-                </View>
-
-                <TouchableOpacity
-                  style={[localStyles.createButton, { backgroundColor: colors.primary }]}
-                  onPress={handleCreateActivity}
-                >
-                  <Text style={localStyles.createButtonText}>Create Activity</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[localStyles.closeButton, { backgroundColor: colors.background }]}
-                  onPress={() => setShowCreateActivity(false)}
-                >
-                  <Text style={[localStyles.closeButtonText, { color: colors.text }]}>Cancel</Text>
-                </TouchableOpacity>
-              </ScrollView>
-            </View>
-          </KeyboardAvoidingView>
-        </View>
-      </Modal>
+      />
+      <CoachTour
+        id="map"
+        after="tabs"
+        delay={1200}
+        steps={[
+          {
+            icon: 'map',
+            title: 'The Map',
+            body: 'Pins show activities: things people nearby want to do. Orange price tags are local deals. Tap any pin to see details and join.',
+          },
+          {
+            icon: 'add',
+            target: tourAddRef,
+            title: 'Post an activity',
+            body: "Tap + and finish the sentence \"I want to…\", then pick a time and place. People nearby can ask to join, and you plan it together in the activity chat.",
+          },
+          {
+            icon: 'car',
+            target: tourRideRef,
+            title: 'Get a ride',
+            body: 'Tap the car to book a ride with a verified Wiji driver. You can share your live trip with trusted friends and press SOS if you need help.',
+          },
+          { icon: 'storefront', target: tourDealRef, title: 'Shops and deals', body: 'Purple shop pins are verified businesses you can order from. Tap the price tag button to see every deal within 50 km, closest first. Run a business? Switch your profile to Business to post your own.' },
+          { icon: 'locate', target: tourLocateRef, title: 'Find me', body: 'Jumps the map back to where you are.' },
+          {
+            icon: 'list',
+            target: tourTabsRef,
+            title: 'My activities',
+            body: "Switch to My activities to see everything you've posted or joined, plus any join requests waiting for your answer.",
+          },
+        ]}
+      />
     </SafeAreaView>
   );
 }
