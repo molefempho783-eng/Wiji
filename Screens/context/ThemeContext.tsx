@@ -43,85 +43,87 @@ inputBorder: string;
 
 // Define the light and dark theme color palettes
 const lightColors: ThemeColors = {
-  background: '#f0f2f5',
-  cardBackground: '#ffffff',
-  surface: '#ffffff',
-  text: '#111827',
-  textPrimary: '#111827',
-  secondaryText: '#6B7280',
-  placeholderText: '#5a5a5bff',
-  borderColor: '#E5E7EB',
-  shadowColor: '#000000',
+  background: '#F6F4FB',
+  cardBackground: '#FFFFFF',
+  surface: '#FFFFFF',
+  text: '#15102B',
+  textPrimary: '#15102B',
+  secondaryText: '#5B5670',
+  placeholderText: '#77718C',
+  borderColor: '#E6E1F2',
+  shadowColor: '#15102B',
 
-  primary: '#2563EB',
-  primaryDark: '#1E40AF',
-  primaryLight: '#93C5FD',
-  accent: '#03DAC6',
+  // Wiji brand: violet primary, mint accent
+  primary: '#6C2BD9',
+  primaryDark: '#4C1D95',
+  primaryLight: '#E4D9FB',
+  accent: '#0E9F87',
 
-  link: '#1D4ED8',
+  link: '#5B21B6',
   error: '#B00020',
-  placeholder: '#E5E7EB',
+  placeholder: '#EDE9F6',
 
-  filterButtonBackground: '#E5E7EB',
-  activeFilterBackground: '#2563EB',
-  activeFilterText: '#ffffff',
+  filterButtonBackground: '#EDE9F6',
+  activeFilterBackground: '#6C2BD9',
+  activeFilterText: '#FFFFFF',
 
   success: '#16A34A',
-  warning: '#F59E0B',
+  warning: '#D97706',
   info: '#0284C7',
 
   // ==== keys used by e-hailing styles ====
-  icon: '#111827',
-  buttonText: '#ffffff',
-  border: '#E5E7EB',
+  icon: '#15102B',
+  buttonText: '#FFFFFF',
+  border: '#E6E1F2',
   card: '#FFFFFF',
-  muted: '#6B7280',
-  cardHighlight: '#EFF6FF',
+  muted: '#77718C',
+  cardHighlight: '#F1ECFD',
   inputBg: '#FFFFFF', // TextInput background
-  inputBorder: '#94A3B8',
+  inputBorder: '#B8B0D0',
   secondary: '',
-  textSecondary: '#4B5563'
+  textSecondary: '#5B5670'
 };
 
 const darkColors: ThemeColors = {
-  background: '#121212',
-  cardBackground: '#1e1e1e',
-  surface: '#1e1e1e',
-  text: '#E0E0E0',
-  textPrimary: '#E0E0E0',
-  secondaryText: '#C0C0C0',
-  placeholderText: '#727373ff',
-  borderColor: '#333333',
+  background: '#0E0B1A',
+  cardBackground: '#1A1530',
+  surface: '#1A1530',
+  text: '#ECEAF5',
+  textPrimary: '#ECEAF5',
+  secondaryText: '#B9B3CC',
+  placeholderText: '#8A84A3',
+  borderColor: '#2C2545',
   shadowColor: '#000000',
 
-  primary: '#BB86FC',
-  primaryDark: '#794BC4',
-  primaryLight: 'rgb(59, 26, 135)',
-  accent: '#03DAC6',
+  // Wiji brand: violet primary, mint accent
+  primary: '#8B5CF6',
+  primaryDark: '#6C2BD9',
+  primaryLight: '#3B2380',
+  accent: '#3EF0D0',
 
-  link: '#90CAF9',
+  link: '#C4B5FD',
   error: '#CF6679',
-  placeholder: '#2A2A2A',
+  placeholder: '#241D3A',
 
-  filterButtonBackground: '#2A2A2A',
-  activeFilterBackground: '#BB86FC',
-  activeFilterText: '#121212',
+  filterButtonBackground: '#241D3A',
+  activeFilterBackground: '#8B5CF6',
+  activeFilterText: '#FFFFFF',
 
   success: '#66BB6A',
-  warning: '#FFEB3B',
+  warning: '#FBBF24',
   info: '#64B5F6',
 
   // ==== keys used by e-hailing styles ====
-  icon: '#E0E0E0',
+  icon: '#ECEAF5',
   buttonText: '#FFFFFF',
-  border: '#333333',
-  card: '#1e1e1e',
-  muted: '#9CA3AF',
-  cardHighlight: '#2C2F3A',
-  inputBg: '#1e1e1e',
-  inputBorder: '#4B5563',
+  border: '#2C2545',
+  card: '#1A1530',
+  muted: '#9A93B3',
+  cardHighlight: '#241C40',
+  inputBg: '#1A1530',
+  inputBorder: '#3A3258',
   secondary: '',
-  textSecondary: '#A3A3A3'
+  textSecondary: '#A9A3BF'
 };
 
 
@@ -204,7 +206,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: lightColors.background }}>
         <ActivityIndicator size="large" color={lightColors.primary} />
-        <Text style={{ marginTop: 10, color: lightColors.text }}>Loading theme...</Text>
+        
       </View>
     );
   }
