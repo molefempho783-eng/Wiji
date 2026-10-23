@@ -46,3 +46,6 @@ functions/.env.local
 *.tsbuildinfo
 
 .expo/
+media-originals/
+
+.firebase/
