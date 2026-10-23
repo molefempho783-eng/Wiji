@@ -2,7 +2,23 @@ import { Timestamp } from 'firebase/firestore';
 
 // --- Root Stack Navigation Parameters ---
 export type RootStackParamList = {
-    OnboardingScreen: undefined;
+    OnboardingScreen: { replay?: boolean } | undefined;
+    WalkthroughScreen: { replay?: boolean } | undefined;
+    PayScreen: { payeeUid: string; amount?: number; note?: string; orderId?: string; rideId?: string };
+    BusinessDashboardScreen: { tab?: "orders" | "menu" | "deals" | "settings" } | undefined;
+    BusinessShopScreen: { businessId: string };
+    OrderScreen: { orderId: string };
+    ScanToPayScreen: undefined;
+    PayoutSetupScreen: undefined;
+    DriverApplicationScreen: undefined;
+    SafetyReviewListScreen: undefined;
+    SafetyReviewDetailScreen: { uid: string };
+    RideRequestScreen: undefined;
+    RideTripScreen: { rideId: string; paid?: boolean };
+    DriverHomeScreen: undefined;
+    BusinessVerificationScreen: undefined;
+    TrustedContactsScreen: undefined;
+    IncidentReportScreen: { rideId: string };
     AuthScreen: undefined;
     TermsAndConditionsScreen: undefined;
     PrivacyPolicyScreen: undefined;
@@ -14,6 +30,8 @@ export type RootStackParamList = {
     ActivityDetailScreen: { activityId: string };
     /** Add a map pin deal; optional coords bias autocomplete (from map) */
     CreateMapSpecialScreen: { latitude?: number; longitude?: number };
+    NearbyDealsScreen: { latitude?: number; longitude?: number } | undefined;
+    CallScreen: undefined;
     ChatRoomScreen: { chatId: string; recipientId: string };
     UserProfileScreen: { userId: string };
     ProfileScreen: undefined;    // ← add this
@@ -28,7 +46,6 @@ export type RootStackParamList = {
       | "UserScreen"
       | "BusinessesScreen"
       | "MapScreen"
-      | "CallScreen"
       | "WalletScreen";
   };
 
