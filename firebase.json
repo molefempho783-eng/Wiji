@@ -1,7 +1,4 @@
 {
-  "react-native": {
-    "messaging_android_notification_color": "@color/notification_icon_color"
-  },
   "firestore": {
     "rules": "firestore.rules"
   },
@@ -17,12 +14,91 @@
         ".git",
         "firebase-debug.log",
         "firebase-debug.*.log",
-        "*.local"
+        "*.local",
+        "android",
+        "android/**",
+        ".expo",
+        "app.json",
+        "*.log",
+        ".env.example"
       ],
       "predeploy": [
-      "npm --prefix \"$RESOURCE_DIR\" install",
-      "npm --prefix \"$RESOURCE_DIR\" run build"
-    ]
+        "npm --prefix \"$RESOURCE_DIR\" install",
+        "npm --prefix \"$RESOURCE_DIR\" run build"
+      ]
     }
-  ]
+  ],
+  "hosting": {
+    "public": "website",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "X-Frame-Options",
+            "value": "DENY"
+          },
+          {
+            "key": "X-Content-Type-Options",
+            "value": "nosniff"
+          },
+          {
+            "key": "Referrer-Policy",
+            "value": "strict-origin-when-cross-origin"
+          },
+          {
+            "key": "Content-Security-Policy",
+            "value": "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+          },
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "/admin/**",
+        "headers": [
+          {
+            "key": "X-Robots-Tag",
+            "value": "noindex, nofollow"
+          }
+        ]
+      }
+    ],
+    "cleanUrls": true,
+    "trailingSlash": true,
+    "redirects": [
+      {
+        "source": "/terms.html",
+        "destination": "/terms/",
+        "type": 301
+      },
+      {
+        "source": "/privacy.html",
+        "destination": "/privacy/",
+        "type": 301
+      },
+      {
+        "source": "/privacy-policy",
+        "destination": "/privacy/",
+        "type": 301
+      },
+      {
+        "source": "/terms-and-conditions",
+        "destination": "/terms/",
+        "type": 301
+      },
+      {
+        "source": "/delete",
+        "destination": "/delete-account/",
+        "type": 301
+      }
+    ]
+  }
 }
