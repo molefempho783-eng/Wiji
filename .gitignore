@@ -49,3 +49,6 @@ functions/.env.local
 media-originals/
 
 .firebase/
+
+# Python
+__pycache__/
