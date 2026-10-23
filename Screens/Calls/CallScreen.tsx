@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   PermissionsAndroid,
   Platform,
@@ -9,6 +10,8 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useNavigation } from "@react-navigation/native";
+import { Ionicons } from "@expo/vector-icons";
 import {
   collection,
   doc,
@@ -37,6 +40,7 @@ import {
   writeOffer,
 } from "../../utils/callService";
 import { WebRTCAudioSession } from "../../services/calls/webrtcAudio";
+import CoachTour from "../../components/CoachTour";
 
 type ChatDoc = {
   participants?: string[] | Record<string, boolean>;
@@ -306,9 +310,16 @@ const CallScreen = () => {
         const rtc = await ensureRtc("caller", activeCall.id);
         const offer = await rtc.createOffer();
         await writeOffer(activeCall.id, offer);
-      } catch (error) {
+      } catch (error: any) {
+        console.warn("[CallScreen] start call media failed:", error?.code || "", error?.message || error);
         setCallState("error");
-        setErrorMessage("Could not start call media.");
+        setErrorMessage(
+          error?.code === "permission-denied"
+            ? "Couldn't connect the call (permission denied). Please update Wiji and try again."
+            : /permission|NotAllowed/i.test(String(error?.message || error?.name || ""))
+            ? "Wiji can't use your microphone. Allow it in your phone's settings."
+            : `Could not start call media${error?.message ? `: ${error.message}` : "."}`
+        );
       }
     };
     run();
@@ -341,9 +352,10 @@ const CallScreen = () => {
         const rtc = await ensureRtc("caller", activeCall.id);
         await rtc.applyAnswer(activeCall.answer);
         answerAppliedRef.current = true;
-      } catch (error) {
+      } catch (error: any) {
+        console.warn("[CallScreen] negotiate failed:", error?.code || "", error?.message || error);
         setCallState("error");
-        setErrorMessage("Could not negotiate call connection.");
+        setErrorMessage(`Could not connect the call${error?.message ? `: ${error.message}` : "."}`);
         await failCallSession(activeCall.id, "network_failure");
       }
     };
@@ -425,6 +437,36 @@ const CallScreen = () => {
     }
   }, [activeCall, cleanupRtc]);
 
+  // Leaving this screen would drop the call: ask first
+  const navigation = useNavigation<any>();
+  const inCallRef = useRef(false);
+  inCallRef.current = !!activeCall && ["ringing", "accepted"].includes(String(activeCall.status));
+  useEffect(
+    () =>
+      navigation.addListener("beforeRemove", (e: any) => {
+        if (!inCallRef.current) return;
+        e.preventDefault();
+        Alert.alert("End the call?", "Leaving this screen ends your call.", [
+          { text: "Stay", style: "cancel" },
+          {
+            text: "End call",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                if (activeCallRef.current) await endCallSession(activeCallRef.current.id);
+              } catch {}
+              cleanupRtc();
+              inCallRef.current = false;
+              navigation.dispatch(e.data.action);
+            },
+          },
+        ]);
+      }),
+    [navigation, cleanupRtc]
+  );
+  const activeCallRef = useRef<CallSession | null>(null);
+  activeCallRef.current = activeCall;
+
   const endCall = useCallback(async () => {
     if (!activeCall) return;
     setBusyAction(true);
@@ -449,9 +491,12 @@ const CallScreen = () => {
   return (
     <SafeAreaView style={globalStyles.safeArea} edges={["top", "left", "right"]}>
       <View style={[globalStyles.flex1, { padding: 16 }]}>
-        <Text style={{ color: colors.text, fontSize: 24, fontWeight: "700", marginBottom: 12 }}>
-          CallScreen
-        </Text>
+        <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 12 }}>
+          <TouchableOpacity onPress={() => navigation.goBack()} accessibilityLabel="Back" style={{ paddingRight: 10, paddingVertical: 4 }}>
+            <Ionicons name="arrow-back" size={24} color={colors.text} />
+          </TouchableOpacity>
+          <Text style={{ color: colors.text, fontSize: 24, fontWeight: "700" }}>Calls</Text>
+        </View>
         {callState === "connected" && (
           <Text style={{ color: colors.secondaryText, marginBottom: 10 }}>
             {String(Math.floor(callSeconds / 60)).padStart(2, "0")}:
@@ -594,6 +639,16 @@ const CallScreen = () => {
           />
         )}
       </View>
+      <CoachTour
+        id="calls"
+        steps={[
+          {
+            icon: "call",
+            title: "Calls",
+            body: "Voice-call people you've already chatted with. Tap Call next to their name. Calls use data or Wi-Fi, not airtime.",
+          },
+        ]}
+      />
     </SafeAreaView>
   );
 };

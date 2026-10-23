@@ -3,9 +3,9 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
-  runTransaction,
   serverTimestamp,
   setDoc,
   Timestamp,
@@ -181,37 +181,39 @@ export function subscribeActiveCallForUser(
 }
 
 export async function startCallSession(callerId: string, calleeId: string): Promise<string> {
-  const callId = buildCallId(callerId, calleeId);
-  const callRef = getCallDocRef(callId);
+  // A new record for every call. (Re-using one record per pair broke the security rules: the first
+  // call had to read a record that didn't exist yet, and later calls had to turn an ended call
+  // back into a ringing one. It also meant the incoming-call notification only fired once.)
   const nowMs = Date.now();
+  // "Already in a call?" check. If it can't run (e.g. offline), place the call anyway.
+  let busy = false;
+  try {
+    const mine = await getDocs(query(collection(db, "callSessions"), where("participants", "array-contains", callerId)));
+    busy = mine.docs.some((d) => {
+      const c = d.data() as Omit<CallSession, "id">;
+      if (c.status === "accepted") return true;
+      return c.status === "ringing" && (c.ttlExpiresAt?.toMillis?.() || 0) > nowMs;
+    });
+  } catch (e: any) {
+    console.warn("[callService] busy check failed:", e?.code || e);
+  }
+  if (busy) throw new Error("You're already in a call. End it first.");
 
-  await runTransaction(db, async (t) => {
-    const existing = await t.get(callRef);
-    if (existing.exists()) {
-      const data = existing.data() as Omit<CallSession, "id">;
-      if (data.status === "ringing" || data.status === "accepted") {
-        throw new Error("Call already active for these users.");
-      }
-    }
-    t.set(
-      callRef,
-      {
-        participants: [callerId, calleeId],
-        callerId,
-        calleeId,
-        status: "ringing",
-        offer: null,
-        answer: null,
-        offerCandidates: [],
-        answerCandidates: [],
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        ttlExpiresAt: Timestamp.fromMillis(nowMs + CALL_RING_TIMEOUT_MS),
-      },
-      { merge: true }
-    );
+  const callId = `${buildCallId(callerId, calleeId)}_${nowMs.toString(36)}`;
+  if (!calleeId || calleeId === callerId) throw new Error("Choose someone to call.");
+  await setDoc(getCallDocRef(callId), {
+    participants: [callerId, calleeId],
+    callerId,
+    calleeId,
+    status: "ringing",
+    offer: null,
+    answer: null,
+    offerCandidates: [],
+    answerCandidates: [],
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    ttlExpiresAt: Timestamp.fromMillis(nowMs + CALL_RING_TIMEOUT_MS),
   });
-
   return callId;
 }
 

@@ -20,7 +20,17 @@ type WebRTCAudioOptions = {
   onConnectionStateChange?: (state: ConnectionState) => void;
 };
 
-const DEFAULT_ICE_SERVERS = [{ urls: ["stun:stun.l.google.com:19302"] }];
+// STUN finds each phone's public address. That's enough on most Wi-Fi, but on mobile data (carrier
+// NAT) the phones often can't reach each other directly, so a TURN server relays the audio.
+// Set EXPO_PUBLIC_TURN_URLS (comma-separated, e.g. "turn:turn.example.com:3478,turns:turn.example.com:443"),
+// EXPO_PUBLIC_TURN_USERNAME and EXPO_PUBLIC_TURN_CREDENTIAL in .env to enable it.
+const TURN_URLS = String(process.env.EXPO_PUBLIC_TURN_URLS || "").split(",").map((s) => s.trim()).filter(Boolean);
+const DEFAULT_ICE_SERVERS: Array<{ urls: string | string[]; username?: string; credential?: string }> = [
+  { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+  ...(TURN_URLS.length
+    ? [{ urls: TURN_URLS, username: process.env.EXPO_PUBLIC_TURN_USERNAME || "", credential: process.env.EXPO_PUBLIC_TURN_CREDENTIAL || "" }]
+    : []),
+];
 
 export class WebRTCAudioSession {
   private pc: any;
