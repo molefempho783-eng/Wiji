@@ -33,6 +33,12 @@ import { useTheme } from "../../context/ThemeContext";
 import createStyles from "../../context/appStyles";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  GROUP_SUB_MAX_RAND,
+  GROUP_SUB_MIN_RAND,
+  SubscriptionInterval,
+  priceLabel,
+} from "../../../services/groupSubscriptions";
 
 const AVATAR_PLACEHOLDER = require("../../../assets/avatar-placeholder.png");
 
@@ -59,6 +65,13 @@ const CreateGroupChatScreen = () => {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  // --- Paid group (subscription) ---
+  const [isPaid, setIsPaid] = useState(false);
+  const [billingInterval, setBillingInterval] = useState<SubscriptionInterval>("monthly");
+  const [priceText, setPriceText] = useState("");
+  const [checkingPayee, setCheckingPayee] = useState(false);
+  const [payee, setPayee] = useState<{ bankName?: string; accountLast4?: string; feePercent?: number } | null>(null);
   const navigation = useNavigation<CreateGroupChatScreenNavigationProp>();
   const route = useRoute<CreateGroupChatScreenRouteProp>();
   const { communityId } = route.params;
@@ -148,6 +161,41 @@ const CreateGroupChatScreen = () => {
     }
   };
 
+  // Paid groups pay the creator through their Wiji payout account, so they need one first
+  const togglePaid = async (on: boolean) => {
+    if (!on) {
+      setIsPaid(false);
+      return;
+    }
+    if (!user?.uid) return;
+    setCheckingPayee(true);
+    try {
+      const snap = await getDoc(doc(db, "payees", user.uid));
+      const p = snap.data();
+      if (!snap.exists() || !p?.subaccountCode || p.active === false) {
+        Alert.alert(
+          "Add your bank account first",
+          "Members' subscription payments go straight to your bank account. Set up payouts, then come back to make this a paid group.",
+          [
+            { text: "Not now", style: "cancel" },
+            { text: "Set up payouts", onPress: () => navigation.navigate("PayoutSetupScreen") },
+          ]
+        );
+        return;
+      }
+      setPayee({ bankName: p.bankName, accountLast4: p.accountLast4, feePercent: p.feePercent });
+      setIsPaid(true);
+    } catch (e) {
+      console.error("Payout check failed", e);
+      Alert.alert("Couldn't check your payout account", "Please try again.");
+    } finally {
+      setCheckingPayee(false);
+    }
+  };
+
+  const priceRand = Number(priceText.replace(",", "."));
+  const priceCents = Number.isFinite(priceRand) ? Math.round(priceRand * 100) : NaN;
+
   const handleCreateGroupChat = async () => {
     if (!groupName.trim()) {
       Alert.alert("Missing Info", "Please enter a group name.");
@@ -172,6 +220,11 @@ const CreateGroupChatScreen = () => {
       }
     }
 
+    if (isPaid && (!Number.isFinite(priceRand) || priceRand < GROUP_SUB_MIN_RAND || priceRand > GROUP_SUB_MAX_RAND)) {
+      Alert.alert("Set a price", `The subscription price must be between R${GROUP_SUB_MIN_RAND} and R${GROUP_SUB_MAX_RAND.toLocaleString("en-ZA")}.`);
+      return;
+    }
+
     setLoading(true);
     try {
       const canCreate = await checkCanCreateGroup();
@@ -186,17 +239,20 @@ const CreateGroupChatScreen = () => {
       let imageUrl: string | null = null;
       if (groupImageUri) imageUrl = await uploadImage(groupImageUri);
 
-      const usersRef = collection(db, "users");
-      const q = query(
-        usersRef,
-        where("joinedCommunities", "array-contains", communityId)
-      );
-      const snapshot = await getDocs(q);
+      // Free groups start with everyone in the community; paid groups start with just the creator
       const communityMembers: string[] = [];
-      snapshot.forEach((doc: QueryDocumentSnapshot<DocumentData>) => {
-        const data = doc.data();
-        if (data.uid) communityMembers.push(data.uid);
-      });
+      if (!isPaid) {
+        const usersRef = collection(db, "users");
+        const q = query(
+          usersRef,
+          where("joinedCommunities", "array-contains", communityId)
+        );
+        const snapshot = await getDocs(q);
+        snapshot.forEach((doc: QueryDocumentSnapshot<DocumentData>) => {
+          const data = doc.data();
+          if (data.uid) communityMembers.push(data.uid);
+        });
+      }
       if (user?.uid && !communityMembers.includes(user.uid)) {
         communityMembers.push(user.uid);
       }
@@ -213,10 +269,18 @@ const CreateGroupChatScreen = () => {
           members: communityMembers,
           hasPassword,
           password: hasPassword ? password : null,
+          subscription: isPaid
+            ? { enabled: true, interval: billingInterval, priceCents, currency: "ZAR" }
+            : null,
         }
       );
 
-      Alert.alert("Success", `Group chat "${groupName}" created successfully!`);
+      Alert.alert(
+        "Success",
+        isPaid
+          ? `Paid group "${groupName}" created. Members pay ${priceLabel({ priceCents, interval: billingInterval })} to join.`
+          : `Group chat "${groupName}" created successfully!`
+      );
       navigation.goBack();
     } catch (error: any) {
       console.error("Create group error:", error);
@@ -339,6 +403,84 @@ const CreateGroupChatScreen = () => {
             </TouchableOpacity>
           </View>
         </>
+      )}
+
+      {/* Paid group (subscription) */}
+      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginVertical: 10 }}>
+        <View style={{ flex: 1, paddingRight: 12 }}>
+          <Text style={{ color: colors.text }}>Paid group (subscription)</Text>
+          <Text style={{ color: colors.secondaryText, fontSize: 12, marginTop: 2 }}>
+            Members pay monthly or yearly to be in this group
+          </Text>
+        </View>
+        {checkingPayee ? (
+          <ActivityIndicator color={colors.primary} />
+        ) : (
+          <Switch value={isPaid} onValueChange={togglePaid} />
+        )}
+      </View>
+
+      {isPaid && (
+        <View style={{ backgroundColor: colors.cardBackground, borderRadius: 12, padding: 14, marginBottom: 12 }}>
+          <Text style={{ color: colors.text, fontWeight: "600", marginBottom: 8 }}>Billing</Text>
+          <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
+            {(["monthly", "yearly"] as SubscriptionInterval[]).map((opt) => {
+              const selected = billingInterval === opt;
+              return (
+                <TouchableOpacity
+                  key={opt}
+                  onPress={() => setBillingInterval(opt)}
+                  style={{
+                    flex: 1,
+                    paddingVertical: 10,
+                    borderRadius: 10,
+                    alignItems: "center",
+                    borderWidth: 1.5,
+                    borderColor: selected ? colors.primary : colors.border,
+                    backgroundColor: selected ? colors.primary : "transparent",
+                  }}
+                >
+                  <Text style={{ color: selected ? colors.buttonText : colors.text, fontWeight: "600" }}>
+                    {opt === "monthly" ? "Monthly" : "Yearly"}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Text style={{ color: colors.text, fontWeight: "600", marginBottom: 6 }}>
+            Price per {billingInterval === "yearly" ? "year" : "month"} (R)
+          </Text>
+          <TextInput
+            style={[
+              styles.input,
+              {
+                borderWidth: 1.5,
+                borderColor: colors.primary,
+                borderRadius: 10,
+                backgroundColor: colors.background,
+                color: colors.text,
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                fontSize: 16,
+              },
+            ]}
+            placeholder={billingInterval === "yearly" ? "e.g. 500" : "e.g. 50"}
+            placeholderTextColor={colors.placeholderText}
+            keyboardType="decimal-pad"
+            value={priceText}
+            onChangeText={(t) => setPriceText(t.replace(/[^0-9.,]/g, ""))}
+          />
+          <Text style={{ color: colors.secondaryText, fontSize: 12, lineHeight: 17 }}>
+            {Number.isFinite(priceCents) && priceRand >= GROUP_SUB_MIN_RAND
+              ? `Members pay ${priceLabel({ priceCents, interval: billingInterval })}. `
+              : ""}
+            Payments go to your {payee?.bankName || "bank"} account
+            {payee?.accountLast4 ? ` ••• ${payee.accountLast4}` : ""}, less Wiji's
+            {payee?.feePercent != null ? ` ${payee.feePercent}%` : ""} fee and Paystack's card fees. Members who stop
+            paying are removed from the group when their time runs out.
+          </Text>
+        </View>
       )}
 
       <TouchableOpacity

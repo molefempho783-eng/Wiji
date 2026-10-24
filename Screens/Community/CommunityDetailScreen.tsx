@@ -33,6 +33,7 @@ import { useTheme } from "../context/ThemeContext";
 import createStyles, { FONT_SIZES } from "../context/appStyles";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Platform } from "react-native";
+import { paidGroupSettings, priceLabel } from "../../services/groupSubscriptions";
 
 const DEFAULT_COMMUNITY_LOGO = require("../../assets/community-placeholder.png");
 
@@ -53,7 +54,7 @@ const CommunityDetailScreen = () => {
   const [uid, setUid] = useState<string | null>(auth.currentUser?.uid ?? null);
   const [isMember, setIsMember] = useState(false);
   const [groupChats, setGroupChats] = useState<
-    { id: string; name: string; profilePic?: string; lastMessageText?: string; unreadCount?: number }[]
+    { id: string; name: string; profilePic?: string; lastMessageText?: string; unreadCount?: number; priceText?: string | null; isMemberOfGroup?: boolean }[]
   >([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -138,6 +139,12 @@ const CommunityDetailScreen = () => {
           profilePic: data.profilePic || null,
           lastMessageText: data.lastMessageText,
           unreadCount,
+          // Paid groups show their price; non-members don't see the latest message
+          priceText: (() => {
+            const paid = paidGroupSettings(data);
+            return paid ? priceLabel(paid) : null;
+          })(),
+          isMemberOfGroup: !!currentUid && Array.isArray(data.members) && data.members.includes(currentUid),
         };
       });
       setGroupChats(chats);
@@ -400,8 +407,9 @@ const CommunityDetailScreen = () => {
                     .substring(0, 2)
                     .toUpperCase() || "??";
                 const hasUnread = (item.unreadCount ?? 0) > 0;
+                const hidePreview = !!item.priceText && !item.isMemberOfGroup;
                 const preview =
-                  item.lastMessageText != null && String(item.lastMessageText).trim() !== ""
+                  !hidePreview && item.lastMessageText != null && String(item.lastMessageText).trim() !== ""
                     ? String(item.lastMessageText).trim()
                     : null;
 
@@ -427,7 +435,32 @@ const CommunityDetailScreen = () => {
                       </View>
                     )}
                     <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={styles.groupChatText}>{item.name}</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap" }}>
+                        <Text style={styles.groupChatText}>{item.name}</Text>
+                        {item.priceText ? (
+                          <View
+                            style={{
+                              flexDirection: "row",
+                              alignItems: "center",
+                              marginLeft: 8,
+                              paddingHorizontal: 8,
+                              paddingVertical: 2,
+                              borderRadius: 10,
+                              backgroundColor: colors.primary,
+                            }}
+                          >
+                            <Ionicons
+                              name={item.isMemberOfGroup ? "checkmark-circle" : "lock-closed"}
+                              size={11}
+                              color={colors.buttonText}
+                              style={{ marginRight: 4 }}
+                            />
+                            <Text style={{ color: colors.buttonText, fontSize: 11, fontWeight: "700" }}>
+                              {item.isMemberOfGroup ? "Subscribed" : item.priceText}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
                       {preview != null && (
                         <Text
                           style={[styles.groupChatText, { fontSize: FONT_SIZES.small, opacity: 0.8 }]}

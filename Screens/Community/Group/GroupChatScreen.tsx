@@ -17,6 +17,7 @@ import {
   Pressable,
   PanResponder,
   Animated,
+  Switch,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { RouteProp, useRoute, useNavigation, useFocusEffect } from "@react-navigation/native";
@@ -44,6 +45,17 @@ import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Clipboard from "expo-clipboard";
+import {
+  GroupSubscription,
+  GroupSubscriptionSettings,
+  formatDate,
+  hasAccess,
+  paidGroupSettings,
+  priceLabel,
+  perLabel,
+  subscribeToGroup,
+  subscriptionDocId,
+} from "../../../services/groupSubscriptions";
 
 // Lazy load MediaLibrary only when needed - prevents crash if native module not available
 let MediaLibraryModule: any = null;
@@ -133,6 +145,15 @@ const GroupChatScreen = () => {
   const [joiningGroup, setJoiningGroup] = useState(false);
   /** User is in joinedCommunities or is the community creator — required before joining a group. */
   const [isCommunityMember, setIsCommunityMember] = useState(false);
+  // Paid (subscription) groups
+  const [paidSettings, setPaidSettings] = useState<GroupSubscriptionSettings | null>(null);
+  /** The community's creator manages every group, so they join paid groups for free. */
+  const [isCommunityOwner, setIsCommunityOwner] = useState(false);
+  const [mySub, setMySub] = useState<GroupSubscription | null>(null);
+  const [savedCards, setSavedCards] = useState<{ id: string; brand?: string; last4?: string }[]>([]);
+  const [payMethod, setPayMethod] = useState<string>("new"); // "new" or a saved card id
+  const [autoRenew, setAutoRenew] = useState(true);
+  const [subscribing, setSubscribing] = useState(false);
 
   const scrollViewRef = useRef<ScrollView>(null);
   const { colors } = useTheme();
@@ -237,6 +258,7 @@ const GroupChatScreen = () => {
           (communitySnap.exists() &&
             communitySnap.data()?.createdBy === currentUserId);
         setIsCommunityMember(!!inCommunity);
+        setIsCommunityOwner(communitySnap.exists() && communitySnap.data()?.createdBy === currentUserId);
 
         if (docSnap.exists()) {
           const data = docSnap.data();
@@ -247,6 +269,7 @@ const GroupChatScreen = () => {
           setIsGroupMember(isMember);
           setHasPassword(data.hasPassword || false);
           setIsCreator(data.createdBy === currentUserId);
+          setPaidSettings(paidGroupSettings(data));
           setGroupProfilePic(data.profilePic || null);
           if (isMember && currentUserId) {
             updateDoc(groupDocRef, { [`unreadCount.${currentUserId}`]: 0 }).catch(() => {});
@@ -287,6 +310,7 @@ const GroupChatScreen = () => {
           setIsGroupMember(memberIds.includes(currentUserId));
           setHasPassword(data.hasPassword || false);
           setIsCreator(data.createdBy === currentUserId);
+          setPaidSettings(paidGroupSettings(data));
           setGroupProfilePic(data.profilePic || null);
           setPinnedMessage((data.pinnedMessage as PinnedMessage) || null);
         }
@@ -335,6 +359,64 @@ const GroupChatScreen = () => {
       };
     }, [currentUserId, communityId])
   );
+
+  const isPaidGroup = !!paidSettings;
+  /** What this viewer has to pay (null = joins for free). */
+  const paywall = isCommunityOwner ? null : paidSettings;
+
+  // My subscription to this group (paid groups only; written by Cloud Functions)
+  useEffect(() => {
+    if (!isPaidGroup || !currentUserId) {
+      setMySub(null);
+      return;
+    }
+    const ref = doc(db, "groupSubscriptions", subscriptionDocId(communityId, groupId, currentUserId));
+    // No doc yet = never subscribed (the read is refused for a missing doc, so treat errors as "none")
+    return onSnapshot(
+      ref,
+      (snap) => setMySub(snap.exists() ? (snap.data() as GroupSubscription) : null),
+      () => setMySub(null)
+    );
+  }, [isPaidGroup, communityId, groupId, currentUserId]);
+
+  // Saved cards for the paywall
+  useEffect(() => {
+    if (!isPaidGroup || isGroupMember || !currentUserId) return;
+    getDocs(collection(db, "paymentMethods", currentUserId, "cards"))
+      .then((snap) => {
+        const cards = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+        setSavedCards(cards);
+        if (cards.length) setPayMethod((m) => (m === "new" ? cards[0].id : m));
+      })
+      .catch(() => setSavedCards([]));
+  }, [isPaidGroup, isGroupMember, currentUserId]);
+
+  const handleSubscribe = useCallback(async () => {
+    if (!paidSettings) return;
+    setSubscribing(true);
+    try {
+      const res = await subscribeToGroup({
+        communityId,
+        groupId,
+        autoRenew,
+        cardId: payMethod === "new" ? null : payMethod,
+      });
+      if (res.status === "paid" || res.status === "active") {
+        setIsGroupMember(true); // the group snapshot confirms it a moment later
+        Alert.alert("You're in!", res.status === "active" ? "Welcome back. Your subscription is still active." : `You've subscribed to ${groupName}.`);
+      } else if (res.status === "pending") {
+        Alert.alert("Payment processing", "We'll add you to the group as soon as Paystack confirms the payment.");
+      } else if (res.status === "abandoned") {
+        // closed the checkout without paying: nothing to say
+      } else {
+        Alert.alert("Payment didn't go through", "Your card wasn't charged. Try again or use another card.");
+      }
+    } catch (e: any) {
+      Alert.alert("Couldn't subscribe", e?.message || "Please try again.");
+    } finally {
+      setSubscribing(false);
+    }
+  }, [paidSettings, communityId, groupId, autoRenew, payMethod, groupName]);
 
   // Join this group (community members only; then they can see messages and get notifications)
   const handleJoinGroup = useCallback(async () => {
@@ -1426,7 +1508,7 @@ const GroupChatScreen = () => {
           <Text style={styles.headerTitle} numberOfLines={1}>{groupName}</Text>
           <View style={{ width: 40 }} />
         </View>
-        {pinnedMessage ? (
+        {pinnedMessage && !paidSettings ? (
           <View
             style={{
               marginHorizontal: 12,
@@ -1457,7 +1539,7 @@ const GroupChatScreen = () => {
             maxWidth: 400,
             alignItems: "center",
           }}>
-            <Ionicons name="chatbubbles-outline" size={56} color={colors.primary} style={{ marginBottom: SPACING.medium }} />
+            <Ionicons name={paywall ? "lock-closed-outline" : "chatbubbles-outline"} size={56} color={colors.primary} style={{ marginBottom: SPACING.medium }} />
             <Text style={{
               fontSize: FONT_SIZES.xlarge,
               fontWeight: "bold",
@@ -1465,8 +1547,17 @@ const GroupChatScreen = () => {
               marginBottom: SPACING.small,
               textAlign: "center",
             }}>
-              {isCommunityMember ? "Join this group?" : "Join the community first"}
+              {!isCommunityMember
+                ? "Join the community first"
+                : paywall
+                ? hasAccess(mySub) ? "Rejoin this group" : "Subscribe to join"
+                : "Join this group?"}
             </Text>
+            {paywall ? (
+              <Text style={{ fontSize: 28, fontWeight: "800", color: colors.textPrimary, marginBottom: SPACING.small }}>
+                {priceLabel(paywall)}
+              </Text>
+            ) : null}
             <Text style={{
               fontSize: FONT_SIZES.medium,
               color: colors.textSecondary,
@@ -1474,11 +1565,101 @@ const GroupChatScreen = () => {
               textAlign: "center",
               lineHeight: 22,
             }}>
-              {isCommunityMember
-                ? "You’ll see messages and get notifications from this group. Join only if you want to participate."
-                : "You need to join this community before you can join this group chat. Open the community page, tap Join Community, then come back here."}
+              {!isCommunityMember
+                ? `You need to join this community before you can join this group chat.${paywall ? ` This is a paid group (${priceLabel(paywall)}).` : ""} Open the community page, tap Join Community, then come back here.`
+                : paywall
+                ? hasAccess(mySub)
+                  ? `Your subscription is paid until ${formatDate(mySub?.currentPeriodEnd)}. Rejoin at no extra cost.`
+                  : `This is a paid group. Pay ${priceLabel(paywall)} to see its messages and take part. ${autoRenew ? `It renews every ${perLabel(paywall.interval)} until you turn auto-renew off.` : `Your access ends after one ${perLabel(paywall.interval)} unless you pay again.`}`
+                : "You’ll see messages and get notifications from this group. Join only if you want to participate."}
             </Text>
-            {isCommunityMember ? (
+            {isCommunityMember && paywall && !hasAccess(mySub) ? (
+            <View style={{ alignSelf: "stretch" }}>
+              {mySub?.status === "expired" ? (
+                <Text style={{ color: colors.textSecondary, fontSize: FONT_SIZES.small, textAlign: "center", marginBottom: SPACING.medium }}>
+                  Your previous subscription ended on {formatDate(mySub.currentPeriodEnd)}.
+                </Text>
+              ) : null}
+              <Text style={{ color: colors.textPrimary, fontWeight: "600", marginBottom: SPACING.small }}>Pay with</Text>
+              {[...savedCards.map((c) => ({ id: c.id, label: `${c.brand || "Card"} •••• ${c.last4 || ""}` })), { id: "new", label: "New card" }].map((opt) => {
+                const selected = payMethod === opt.id;
+                return (
+                  <TouchableOpacity
+                    key={opt.id}
+                    onPress={() => setPayMethod(opt.id)}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      paddingVertical: 10,
+                      paddingHorizontal: 12,
+                      borderRadius: 8,
+                      borderWidth: 1.5,
+                      borderColor: selected ? colors.primary : colors.border,
+                      marginBottom: SPACING.small,
+                    }}
+                  >
+                    <Ionicons name={selected ? "radio-button-on" : "radio-button-off"} size={18} color={selected ? colors.primary : colors.textSecondary} style={{ marginRight: 10 }} />
+                    <Ionicons name={opt.id === "new" ? "add-circle-outline" : "card-outline"} size={18} color={colors.textPrimary} style={{ marginRight: 8 }} />
+                    <Text style={{ color: colors.textPrimary }}>{opt.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginVertical: SPACING.small }}>
+                <View style={{ flex: 1, paddingRight: 10 }}>
+                  <Text style={{ color: colors.textPrimary }}>Renew automatically</Text>
+                  <Text style={{ color: colors.textSecondary, fontSize: FONT_SIZES.small }}>
+                    {payMethod === "new" ? "Your card is saved securely by Paystack for renewals" : "Charged to this card each " + perLabel(paywall.interval)}
+                  </Text>
+                </View>
+                <Switch value={autoRenew} onValueChange={setAutoRenew} trackColor={{ false: colors.border, true: colors.primary }} thumbColor="#fff" />
+              </View>
+              <TouchableOpacity
+                style={{
+                  backgroundColor: colors.primary,
+                  paddingVertical: SPACING.medium,
+                  paddingHorizontal: SPACING.xlarge,
+                  borderRadius: 8,
+                  alignItems: "center",
+                  marginTop: SPACING.small,
+                  opacity: subscribing ? 0.7 : 1,
+                }}
+                onPress={handleSubscribe}
+                disabled={subscribing}
+              >
+                {subscribing ? (
+                  <ActivityIndicator size="small" color={colors.buttonText} />
+                ) : (
+                  <Text style={{ color: colors.buttonText, fontSize: FONT_SIZES.medium, fontWeight: "bold" }}>
+                    Subscribe · {priceLabel(paywall)}
+                  </Text>
+                )}
+              </TouchableOpacity>
+              <Text style={{ color: colors.textSecondary, fontSize: FONT_SIZES.small, textAlign: "center", marginTop: SPACING.small }}>
+                Secure card payment by Paystack
+              </Text>
+            </View>
+            ) : isCommunityMember && paywall ? (
+            <TouchableOpacity
+              style={{
+                backgroundColor: colors.primary,
+                paddingVertical: SPACING.medium,
+                paddingHorizontal: SPACING.xlarge,
+                borderRadius: 8,
+                alignSelf: "stretch",
+                alignItems: "center",
+              }}
+              onPress={handleSubscribe}
+              disabled={subscribing}
+            >
+              {subscribing ? (
+                <ActivityIndicator size="small" color={colors.buttonText} />
+              ) : (
+                <Text style={{ color: colors.buttonText, fontSize: FONT_SIZES.medium, fontWeight: "bold" }}>
+                  Rejoin group
+                </Text>
+              )}
+            </TouchableOpacity>
+            ) : isCommunityMember ? (
             <TouchableOpacity
               style={{
                 backgroundColor: colors.primary,
@@ -1519,7 +1700,7 @@ const GroupChatScreen = () => {
             <TouchableOpacity
               style={{ marginTop: SPACING.medium }}
               onPress={() => navigation.goBack()}
-              disabled={joiningGroup}
+              disabled={joiningGroup || subscribing}
             >
               <Text style={{ color: colors.textSecondary, fontSize: FONT_SIZES.medium }}>
                 Not now
@@ -1700,6 +1881,27 @@ const GroupChatScreen = () => {
               {pinnedMessage.text}
             </Text>
           </View>
+        ) : null}
+
+        {isPaidGroup && !isCreator && mySub?.status === "past_due" ? (
+          <TouchableOpacity
+            onPress={() => navigation.navigate("GroupDetailsScreen", { groupId, groupName, communityId })}
+            style={{
+              marginHorizontal: 12,
+              marginBottom: 6,
+              borderRadius: 10,
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              backgroundColor: "#FFF4E5",
+              flexDirection: "row",
+              alignItems: "center",
+            }}
+          >
+            <Ionicons name="alert-circle" size={16} color="#B26A00" style={{ marginRight: 8 }} />
+            <Text style={{ color: "#7A4A00", flex: 1, fontSize: FONT_SIZES.small }}>
+              We couldn't renew your subscription. Tap to pay and keep your access.
+            </Text>
+          </TouchableOpacity>
         ) : null}
 
         <View style={{ flex: 1 }}>
