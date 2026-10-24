@@ -42,6 +42,34 @@ service cloud.firestore {
         && request.auth.uid in get(/databases/$(database)/documents/communities/$(communityId)/groupChats/$(chatId)).data.members;
     }
 
+    // Paid (subscription) group chats: only paying members (and the creators) get in
+    function isPaidGroupData(data) {
+      return data.get('subscription', null) is map
+        && data.subscription.get('enabled', false) == true;
+    }
+
+    function isPaidGroupChat(communityId, chatId) {
+      return isPaidGroupData(get(/databases/$(database)/documents/communities/$(communityId)/groupChats/$(chatId)).data);
+    }
+
+    // Price R5–R20 000, monthly or yearly, and the creator must have a payout account (payees/{uid})
+    function validGroupSubscription(data) {
+      return !isPaidGroupData(data)
+        || (
+          data.subscription.interval in ['monthly', 'yearly']
+          && data.subscription.priceCents is int
+          && data.subscription.priceCents >= 500
+          && data.subscription.priceCents <= 2000000
+          && data.subscription.currency == 'ZAR'
+          && exists(/databases/$(database)/documents/payees/$(request.auth.uid))
+        );
+    }
+
+    function isCommunityCreator(communityId) {
+      return exists(/databases/$(database)/documents/communities/$(communityId))
+        && get(/databases/$(database)/documents/communities/$(communityId)).data.createdBy == request.auth.uid;
+    }
+
     function isBusinessOwner(businessId) {
       return isSignedIn()
         && exists(/databases/$(database)/documents/businesses/$(businessId))
@@ -207,11 +235,17 @@ service cloud.firestore {
         allow get, list: if isSignedIn();
 
         allow create: if canCreateCommunityGroups(communityId)
-        && request.resource.data.keys().hasAny(['name', 'title']);
+        && request.resource.data.keys().hasAny(['name', 'title'])
+        && request.resource.data.createdBy == request.auth.uid
+        && validGroupSubscription(request.resource.data)
+        // a paid group starts with only its creator; members join by paying
+        && (!isPaidGroupData(request.resource.data) || request.resource.data.members == [request.auth.uid]);
 
         allow update: if (
           (
+            // joining a free group yourself (paid groups: only the payment functions add members)
             isMemberByUserDoc(communityId)
+            && !isPaidGroupData(resource.data)
             && changedOnly(['members'])
             && (request.resource.data.members is list)
             && !(request.auth.uid in (resource.data.members is list ? resource.data.members : []))
@@ -226,11 +260,16 @@ service cloud.firestore {
           )
           ||
           (
-            exists(/databases/$(database)/documents/communities/$(communityId))
-            && get(/databases/$(database)/documents/communities/$(communityId)).data.createdBy == request.auth.uid
+            // community admin can manage the group but not change what members pay
+            isCommunityCreator(communityId)
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['subscription', 'createdBy'])
           )
           ||
-          (resource.data.createdBy == request.auth.uid)
+          (
+            resource.data.createdBy == request.auth.uid
+            && request.resource.data.createdBy == resource.data.createdBy
+            && validGroupSubscription(request.resource.data)
+          )
           ||
           (
             isMemberOfGroupChat(communityId, chatId)
@@ -252,14 +291,16 @@ service cloud.firestore {
         );
 
         match /messages/{messageId} {
+          // Paid groups: only current members (paid up) and the community creator
           allow get, list: if isSignedIn()
-            && (isMemberByUserDoc(communityId) || isMemberOfGroupChat(communityId, chatId)
-                || (exists(/databases/$(database)/documents/communities/$(communityId))
-                    && get(/databases/$(database)/documents/communities/$(communityId)).data.createdBy == request.auth.uid));
+            && (isMemberOfGroupChat(communityId, chatId)
+                || (isMemberByUserDoc(communityId) && !isPaidGroupChat(communityId, chatId))
+                || isCommunityCreator(communityId));
 
           allow create: if (
             (
-              (isMemberByUserDoc(communityId) || isMemberOfGroupChat(communityId, chatId))
+              (isMemberOfGroupChat(communityId, chatId)
+                || (isMemberByUserDoc(communityId) && !isPaidGroupChat(communityId, chatId)))
               && (
                 (request.resource.data.senderId == request.auth.uid) ||
                 (request.resource.data.senderUid == request.auth.uid)
@@ -573,6 +614,12 @@ service cloud.firestore {
     match /payments/{reference} {
       allow read: if isStaff() || (isSignedIn()
         && (resource.data.payerUid == request.auth.uid || resource.data.payeeUid == request.auth.uid));
+      allow write: if false;
+    }
+    // Paid group subscriptions: the subscriber and the group's creator can see them; only Cloud Functions write
+    match /groupSubscriptions/{subId} {
+      allow read: if isStaff() || (isSignedIn()
+        && (resource.data.uid == request.auth.uid || resource.data.creatorUid == request.auth.uid));
       allow write: if false;
     }
     // Saved cards: owner sees brand and last 4 digits only; the Paystack token lives in

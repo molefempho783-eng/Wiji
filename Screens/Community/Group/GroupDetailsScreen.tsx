@@ -9,11 +9,12 @@ import {
   ActivityIndicator,
   Image,
   Platform,
+  Switch,
 } from "react-native";
 import { RouteProp, useNavigation, useRoute } from "@react-navigation/native"; 
 import { StackNavigationProp } from "@react-navigation/stack";
 import { db, auth, storage } from "../../../firebaseConfig";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, onSnapshot, query, updateDoc, where } from "firebase/firestore";
 import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
 import * as ImagePicker from 'expo-image-picker';
 import { RootStackParamList } from "../../../types"; 
@@ -22,6 +23,16 @@ import createStyles from '../../context/appStyles';
 import { SPACING, FONT_SIZES } from '../../context/appStyles'; 
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  GroupSubscription,
+  formatDate,
+  paidGroupSettings,
+  perLabel,
+  priceLabel,
+  setGroupAutoRenew,
+  subscribeToGroup,
+  subscriptionDocId,
+} from "../../../services/groupSubscriptions";
 
 type GroupDetailsScreenRouteProp = RouteProp<RootStackParamList, "GroupDetailsScreen">;
 type GroupDetailsScreenNavigationProp = StackNavigationProp<RootStackParamList, "GroupDetailsScreen">;
@@ -41,6 +52,11 @@ const GroupDetailsScreen = () => {
   const [membersProfiles, setMembersProfiles] = useState<any[]>([]);
   const [groupImageUri, setGroupImageUri] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
+
+  // Paid groups
+  const [mySub, setMySub] = useState<GroupSubscription | null>(null);
+  const [subscriberCount, setSubscriberCount] = useState<number | null>(null);
+  const [subBusy, setSubBusy] = useState(false);
 
   const { colors } = useTheme(); 
   const insets = useSafeAreaInsets();
@@ -105,6 +121,63 @@ const GroupDetailsScreen = () => {
 
     fetchGroupDetails();
   }, [groupId, communityId, currentUserId, groupName, navigation]);
+
+  const paid = paidGroupSettings(groupData);
+
+  // My subscription (members) and the number of paying members (creator)
+  useEffect(() => {
+    if (!paid || !currentUserId) return;
+    if (groupData?.createdBy === currentUserId) {
+      getDocs(
+        query(
+          collection(db, "groupSubscriptions"),
+          where("creatorUid", "==", currentUserId),
+          where("communityId", "==", communityId),
+          where("groupId", "==", groupId)
+        )
+      )
+        .then((snap) => setSubscriberCount(snap.docs.filter((d) => ["active", "past_due"].includes(d.data().status)).length))
+        .catch(() => setSubscriberCount(null));
+      return;
+    }
+    return onSnapshot(
+      doc(db, "groupSubscriptions", subscriptionDocId(communityId, groupId, currentUserId)),
+      (snap) => setMySub(snap.exists() ? (snap.data() as GroupSubscription) : null),
+      () => setMySub(null)
+    );
+  }, [!!paid, groupData?.createdBy, currentUserId, communityId, groupId]);
+
+  const toggleAutoRenew = async (on: boolean) => {
+    if (on && !mySub?.cardId) {
+      Alert.alert("No saved card", "Pay with a card and keep 'Renew automatically' on to set up automatic renewal.");
+      return;
+    }
+    setSubBusy(true);
+    try {
+      await setGroupAutoRenew({ communityId, groupId, autoRenew: on });
+      if (!on) {
+        Alert.alert("Auto-renew turned off", `You'll keep access until ${formatDate(mySub?.currentPeriodEnd)}.`);
+      }
+    } catch (e: any) {
+      Alert.alert("Couldn't update", e?.message || "Please try again.");
+    } finally {
+      setSubBusy(false);
+    }
+  };
+
+  const payNow = async () => {
+    setSubBusy(true);
+    try {
+      const res = await subscribeToGroup({ communityId, groupId, autoRenew: true, payAhead: true });
+      if (res.status === "paid") Alert.alert("Paid", "Thanks! Your subscription is up to date.");
+      else if (res.status === "pending") Alert.alert("Payment processing", "We'll update your subscription once Paystack confirms the payment.");
+      else if (res.status !== "abandoned") Alert.alert("Payment didn't go through", "Your card wasn't charged. Try again or use another card.");
+    } catch (e: any) {
+      Alert.alert("Couldn't pay", e?.message || "Please try again.");
+    } finally {
+      setSubBusy(false);
+    }
+  };
 
   const handleImagePick = async () => {
     if (!isMember) {
@@ -328,6 +401,56 @@ const GroupDetailsScreen = () => {
             <Text style={styles.valueText}>{groupData.description || "No description"}</Text>
           )}
         </View>
+
+        {/* Subscription (paid groups) */}
+        {paid && (
+          <View style={styles.detailSection}>
+            <Text style={styles.label}>Subscription</Text>
+            <Text style={styles.valueText}>
+              {priceLabel(paid)} · billed {paid.interval === "yearly" ? "yearly" : "monthly"}
+            </Text>
+            {isCreator ? (
+              <Text style={{ color: colors.textSecondary, marginTop: SPACING.small }}>
+                {subscriberCount == null
+                  ? "Members pay to join. Payments go to your payout bank account."
+                  : `${subscriberCount} paying member${subscriberCount === 1 ? "" : "s"}. Payments go to your payout bank account.`}
+              </Text>
+            ) : mySub ? (
+              <View style={{ marginTop: SPACING.small }}>
+                <Text style={{ color: mySub.status === "past_due" ? "#B26A00" : colors.textSecondary }}>
+                  {mySub.status === "active" && mySub.autoRenew
+                    ? `Renews on ${formatDate(mySub.currentPeriodEnd)} for ${priceLabel({ priceCents: mySub.priceCents, interval: mySub.interval })}`
+                    : mySub.status === "active"
+                    ? `Access until ${formatDate(mySub.currentPeriodEnd)}. It won't renew.`
+                    : mySub.status === "past_due"
+                    ? "We couldn't charge your card for this renewal. Pay now to keep your access."
+                    : `Ended ${formatDate(mySub.currentPeriodEnd)}`}
+                </Text>
+                {(mySub.status === "active" || mySub.status === "past_due") && (
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: SPACING.medium }}>
+                    <Text style={{ color: colors.textPrimary }}>Renew automatically every {perLabel(mySub.interval)}</Text>
+                    {subBusy ? (
+                      <ActivityIndicator color={colors.primary} />
+                    ) : (
+                      <Switch value={!!mySub.autoRenew} onValueChange={toggleAutoRenew} trackColor={{ false: colors.border, true: colors.primary }} thumbColor="#fff" />
+                    )}
+                  </View>
+                )}
+                {(mySub.status === "past_due" || (mySub.status === "active" && !mySub.autoRenew)) && (
+                  <TouchableOpacity
+                    onPress={payNow}
+                    disabled={subBusy}
+                    style={{ backgroundColor: colors.primary, borderRadius: 8, paddingVertical: SPACING.medium, alignItems: "center", marginTop: SPACING.medium }}
+                  >
+                    <Text style={{ color: colors.buttonText, fontWeight: "bold" }}>
+                      {mySub.status === "past_due" ? `Pay ${priceLabel(paid)} now` : `Pay for another ${perLabel(paid.interval)}`}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            ) : null}
+          </View>
+        )}
 
         {/* Group Members */}
         <View style={styles.detailSection}>

@@ -14,6 +14,7 @@ import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import axios, { AxiosError } from "axios";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { onOrderPaid, orderForPayment } from "./shop.js";
+import { onGroupSubscriptionPaid } from "./groupSubscriptions.js";
 
 const PAYSTACK = "https://api.paystack.co";
 const CURRENCY = "ZAR";
@@ -23,7 +24,7 @@ const MAX_RAND = 20000;
 const fs = () => getFirestore(); // lazy: the admin app is initialised in index.ts
 
 /** Push notification to one user (all their devices). */
-async function pushTo(uid: string, title: string, body: string, data: Record<string, string> = {}) {
+export async function pushTo(uid: string, title: string, body: string, data: Record<string, string> = {}) {
   try {
     const u = await fs().collection("users").doc(uid).get();
     const tokens = (u.get("fcmTokens") || []).filter((t: unknown) => typeof t === "string" && t);
@@ -33,7 +34,7 @@ async function pushTo(uid: string, title: string, body: string, data: Record<str
     logger.warn("push failed", e?.message);
   }
 }
-const randText = (cents: number) => `R${(cents / 100).toFixed(2).replace(/\.00$/, "")}`;
+export const randText = (cents: number) => `R${(cents / 100).toFixed(2).replace(/\.00$/, "")}`;
 
 /** A completed ride the passenger is paying for: the fare and the driver come from the ride, never the app. */
 async function rideForPayment(uid: string, rideId: string) {
@@ -59,7 +60,7 @@ function feePercent(): number {
   return Number.isFinite(n) ? Math.min(50, Math.max(0, n)) : 5;
 }
 
-async function paystack<T = any>(method: "get" | "post" | "put", path: string, data?: any): Promise<T> {
+export async function paystack<T = any>(method: "get" | "post" | "put", path: string, data?: any): Promise<T> {
   try {
     const res = await axios.request({
       method,
@@ -81,14 +82,14 @@ async function paystack<T = any>(method: "get" | "post" | "put", path: string, d
   }
 }
 
-function requireUser(req: CallableRequest<any>) {
+export function requireUser(req: CallableRequest<any>) {
   const uid = req.auth?.uid;
   if (!uid) throw new HttpsError("unauthenticated", "Please sign in first.");
   const email = (req.auth?.token?.email as string | undefined) || "";
   return { uid, email };
 }
 
-function newReference() {
+export function newReference() {
   return `wiji_${Date.now()}_${randomBytes(4).toString("hex")}`;
 }
 
@@ -100,7 +101,7 @@ function toCents(amountRand: unknown): number {
   return Math.round(n * 100);
 }
 
-async function displayName(uid: string): Promise<string> {
+export async function displayName(uid: string): Promise<string> {
   try {
     const u = (await fs().collection("users").doc(uid).get()).data();
     return (u?.username as string) || (u?.displayName as string) || "Wiji user";
@@ -109,7 +110,7 @@ async function displayName(uid: string): Promise<string> {
   }
 }
 
-async function getPayee(payeeUid: string) {
+export async function getPayee(payeeUid: string) {
   const snap = await fs().collection("payees").doc(payeeUid).get();
   const payee = snap.data();
   if (!snap.exists || !payee?.subaccountCode || payee.active === false) {
@@ -131,9 +132,9 @@ async function getPayee(payeeUid: string) {
   return payee;
 }
 
-/** Save a reusable card from a successful Paystack transaction. Token stays server-side. */
-async function saveCard(uid: string, email: string, auth: any) {
-  if (!auth?.reusable || !auth?.authorization_code) return;
+/** Save a reusable card from a successful Paystack transaction. Token stays server-side. Returns the card id. */
+export async function saveCard(uid: string, email: string, auth: any): Promise<string | null> {
+  if (!auth?.reusable || !auth?.authorization_code) return null;
   const cardId = (auth.signature || auth.authorization_code).replace(/[^A-Za-z0-9_-]/g, "");
   const db = fs();
   await db.collection("paymentMethods").doc(uid).collection("cards").doc(cardId).set(
@@ -154,10 +155,11 @@ async function saveCard(uid: string, email: string, auth: any) {
     authorizationCode: auth.authorization_code,
     updatedAt: FieldValue.serverTimestamp(),
   });
+  return cardId;
 }
 
 /** Apply a verified Paystack transaction to our payment record (idempotent). */
-async function applyTransaction(tx: any): Promise<any> {
+export async function applyTransaction(tx: any): Promise<any> {
   const reference = tx?.reference;
   if (!reference) return null;
   const ref = fs().collection("payments").doc(reference);
@@ -187,8 +189,12 @@ async function applyTransaction(tx: any): Promise<any> {
     await fs().collection("rides").doc(String(p.rideId)).update({ paid: true, paymentRef: reference, paidAt: FieldValue.serverTimestamp() })
       .catch((e) => logger.error("ride paid update failed", e?.message));
   }
-  // Tell whoever was paid (orders already notify the business with the order details)
-  if (firstPaid && p.payeeUid && !p.orderId) {
+  // A paid group subscription: give (or extend) access to the group; it notifies both sides
+  if (firstPaid && p.groupSub) {
+    await onGroupSubscriptionPaid(reference, p, tx).catch((e) => logger.error("onGroupSubscriptionPaid failed", e?.message));
+  }
+  // Tell whoever was paid (orders and group subscriptions send their own, more specific notifications)
+  if (firstPaid && p.payeeUid && !p.orderId && !p.groupSub) {
     const who = String(p.payerName || "Someone");
     await pushTo(
       String(p.payeeUid),

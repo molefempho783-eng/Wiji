@@ -6,7 +6,7 @@ import { app, auth } from "../firebaseConfig";
 
 const functions = getFunctions(app, "us-central1");
 
-async function call<T = any>(name: string, data: any = {}): Promise<T> {
+export async function call<T = any>(name: string, data: any = {}): Promise<T> {
   if (!auth.currentUser) throw new Error("Please sign in first.");
   try {
     const res = await httpsCallable(functions, name)(data);
