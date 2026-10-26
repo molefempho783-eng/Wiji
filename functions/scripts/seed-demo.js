@@ -237,9 +237,9 @@ async function seedAll() {
     demo: true, senderId: uid.creator, text, mediaUrl: null, mediaType: null, fileName: null, timestamp: ts(daysAgo(3 - i * 2, 18)),
   }]));
   subscribers.forEach((s, i) => {
-    const start = daysAgo(40 - i * 3);
-    const end = new Date(start.getTime() + 30 * DAY);
-    if (end < now) end.setTime(end.getTime() + 30 * DAY);
+    // Paid recently, with access running about two months, so subscribers stay in the group through judging
+    const start = daysAgo(5 + i * 2);
+    const end = new Date(Date.now() + (55 + i * 3) * DAY);
     w.push([db.doc(`groupSubscriptions/${COMMUNITY_ID}_${PAID_GROUP}_${s}`), {
       demo: true, uid: s, communityId: COMMUNITY_ID, groupId: PAID_GROUP, groupName: "Side Hustle Masterclass", creatorUid: uid.creator,
       interval: "monthly", priceCents: 5000, currency: "ZAR", status: "active", autoRenew: false, cardId: null,
@@ -255,17 +255,23 @@ async function seedAll() {
 
   // Activities in the next few days (people within 50 km get alerts for new ones made in the app)
   const soon = (days, hour) => { const d = new Date(); d.setDate(d.getDate() + days); d.setHours(hour, 0, 0, 0); return d; };
+  // Series run until mid-December and one-offs are spread over 6 weeks, so judges always see live activities
+  const SERIES_END = new Date(Date.now() + 50 * DAY);
   const ACTIVITIES = [
-    ["demo_act_market", "Hatfield Square pop-up market", "Local sellers, food and music. Bring your stall or just come shop.", "social", -25.7479, 28.2368, "Hatfield Square, Burnett Street, Pretoria", soon(5, 10), 5],
-    ["demo_act_run", "Saturday morning run: UP to Magnolia Dell", "Easy 7 km social run, all paces welcome.", "fitness", -25.7545, 28.2314, "University of Pretoria main gate, Lynnwood Road", soon(5, 7), 2],
-    ["demo_act_study", "Exam prep study session", "Quiet group study with coffee breaks. IT and commerce students.", "social", -25.7522, 28.2295, "Hatfield Plaza, Burnett Street", soon(2, 14), 3],
-    ["demo_act_melville", "Live music night in Melville", "Local artists on 7th Street. Meet new people, safe rides home with Wiji.", "night-life", -26.1767, 28.0066, "7th Street, Melville, Johannesburg", soon(4, 19), 4],
+    ["demo_act_market", "Saturday pop-up market at Hatfield Square (every week)", "Local sellers, food and music every Saturday. Bring your stall or just come shop.", "social", -25.7479, 28.2368, "Hatfield Square, Burnett Street, Pretoria", soon(0, 9), 6, SERIES_END],
+    ["demo_act_run", "Morning run club: UP to Magnolia Dell (every Saturday)", "Easy 7 km social run, all paces welcome.", "fitness", -25.7545, 28.2314, "University of Pretoria main gate, Lynnwood Road", soon(0, 6), 3, SERIES_END],
+    ["demo_act_study", "Exam prep study sessions (weekdays)", "Quiet group study with coffee breaks. IT and commerce students.", "social", -25.7522, 28.2295, "Hatfield Plaza, Burnett Street", soon(0, 13), 4, SERIES_END],
+    ["demo_act_melville", "Live music nights in Melville (Fridays)", "Local artists on 7th Street. Meet new people, safe rides home with Wiji.", "night-life", -26.1767, 28.0066, "7th Street, Melville, Johannesburg", soon(0, 19), 4, SERIES_END],
+    ["demo_act_braai", "Hatfield Hustlers networking braai", "Meet other young entrepreneurs over a braai. Bring business cards.", "food-and-drinks", -25.7468, 28.2401, "Hatfield, Pretoria", soon(9, 15), 5],
+    ["demo_act_midrand", "Startup pitch practice in Midrand", "Practise your pitch and get feedback from founders.", "social", -25.9992, 28.1263, "Waterfall City, Midrand", soon(16, 17), 3],
+    ["demo_act_bult", "Die Bult sunset picnic", "Picnic and games for students in Potchefstroom.", "outdoor", -26.6893, 27.0968, "Die Bult, Potchefstroom", soon(23, 16), 4],
+    ["demo_act_comedy", "Comedy night at Hatfield Plaza", "Local comedians. Arrive early for good seats.", "entertainment", -25.7522, 28.2295, "Hatfield Plaza, Burnett Street", soon(30, 19), 5],
   ];
-  for (const [id, title, description, activityType, lat, lng, location, start, extra] of ACTIVITIES) {
+  for (const [id, title, description, activityType, lat, lng, location, start, extra, until] of ACTIVITIES) {
     const participants = [uid.creator, ...BG_NAMES.slice(0, extra).map((_, i) => bgUid(i + 10))];
     w.push([db.doc(`activities/${id}`), {
       demo: true, title, description, activityType, latitude: lat, longitude: lng, location, createdBy: uid.creator, createdByName: "Thando Nkosi",
-      createdAt: ts(daysAgo(1)), participants, startTime: ts(start), endTime: ts(new Date(start.getTime() + 3 * 3600e3)), visibility: "everyone", requiresApproval: false,
+      createdAt: ts(daysAgo(1)), participants, startTime: ts(start), endTime: ts(until || new Date(start.getTime() + 3 * 3600e3)), visibility: "everyone", requiresApproval: false,
     }]);
     w.push([db.doc(`activityChats/${id}`), { demo: true, activityId: id, activityTitle: title, createdAt: ts(daysAgo(1)) }]);
   }
