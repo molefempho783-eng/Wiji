@@ -52,3 +52,6 @@ media-originals/
 
 # Python
 __pycache__/
+
+# App builds served by Firebase Hosting (too large for Git)
+website/download/*.apk
