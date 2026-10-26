@@ -26,10 +26,12 @@ h1, h2, h3 { font-family: var(--display); line-height: 1.12; margin: 0; letter-s
 .top .row { height: 64px; }
 .brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); font: 800 21px var(--display); }
 .brand img { border-radius: 8px; }
-.top nav { display: flex; gap: 22px; }
+.top nav { display: flex; gap: 22px; align-items: center; }
 .top nav a { color: var(--muted); text-decoration: none; font-size: 15px; font-weight: 500; }
 .top nav a:hover { color: var(--ink); }
-@media (max-width: 640px) { .top nav a:not([href="/terms/"]):not([href="/privacy/"]) { display: none; } .top nav { gap: 14px; } }
+.top nav a.nav-cta { background: var(--brand); color: #fff; padding: 8px 16px; border-radius: 999px; font-weight: 700; white-space: nowrap; }
+.top nav a.nav-cta:hover { color: #fff; filter: brightness(1.1); }
+@media (max-width: 640px) { .top nav a:not([href="/terms/"]):not([href="/privacy/"]):not(.nav-cta) { display: none; } .top nav { gap: 14px; } }
 
 /* hero */
 .hero { position: relative; overflow: hidden; background: radial-gradient(1200px 500px at 85% -10%, #8B5CF6 0%, transparent 60%), linear-gradient(160deg, #6C2BD9 0%, #3A1786 100%); color: #fff; }
