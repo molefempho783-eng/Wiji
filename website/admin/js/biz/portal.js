@@ -1,4 +1,4 @@
-// Business portal: layout and routing for verified businesses (#/overview, #/orders, #/menu, #/deals, #/customers, #/settings).
+// Business portal: layout and routing for verified businesses (#/overview, #/pulse, #/orders, #/menu, #/deals, #/customers, #/settings).
 import { auth, signOut } from "../firebase.js";
 import { switchMode } from "../app.js";
 import { h, icon } from "../ui.js";
@@ -10,9 +10,11 @@ import { renderMenu } from "./menu.js";
 import { renderDeals } from "./deals.js";
 import { renderCustomers } from "./customers.js";
 import { renderSettings } from "./settings.js";
+import { renderPulse } from "./pulse.js";
 
 const NAV = [
   ["overview", "Overview", "overview"],
+  ["pulse", "Wiji Pulse", "pulse"],
   ["orders", "Orders", "receipt"],
   ["menu", "Menu & prices", "menu"],
   ["deals", "Deals", "tag"],
@@ -21,6 +23,7 @@ const NAV = [
 ];
 const PAGES = {
   overview: renderBizOverview,
+  pulse: renderPulse,
   orders: renderOrders,
   menu: renderMenu,
   deals: renderDeals,
