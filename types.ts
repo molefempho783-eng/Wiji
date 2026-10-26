@@ -10,7 +10,6 @@ export type RootStackParamList = {
     OrderScreen: { orderId: string };
     ScanToPayScreen: undefined;
     PayoutSetupScreen: undefined;
-    PulseScreen: undefined;
     DriverApplicationScreen: undefined;
     SafetyReviewListScreen: undefined;
     SafetyReviewDetailScreen: { uid: string };

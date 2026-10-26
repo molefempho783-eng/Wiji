@@ -43,7 +43,6 @@ import WalletCampaignScreen from "./Screens/Wallet/WalletCampaignScreen";
 import PayScreen from "./Screens/Wallet/PayScreen";
 import ScanToPayScreen from "./Screens/Wallet/ScanToPayScreen";
 import PayoutSetupScreen from "./Screens/Wallet/PayoutSetupScreen";
-import PulseScreen from "./Screens/Wallet/PulseScreen";
 import DriverApplicationScreen from "./Screens/Rides/DriverApplicationScreen";
 import SafetyReviewListScreen from "./Screens/Rides/SafetyReviewListScreen";
 import SafetyReviewDetailScreen from "./Screens/Rides/SafetyReviewDetailScreen";
@@ -508,7 +507,6 @@ const MainNavigator = () => {
               <RootStack.Screen name="PayScreen" component={PayScreen} />
               <RootStack.Screen name="ScanToPayScreen" component={ScanToPayScreen} />
               <RootStack.Screen name="PayoutSetupScreen" component={PayoutSetupScreen} />
-              <RootStack.Screen name="PulseScreen" component={PulseScreen} />
               <RootStack.Screen name="DriverApplicationScreen" component={DriverApplicationScreen} />
               <RootStack.Screen name="SafetyReviewListScreen" component={SafetyReviewListScreen} />
               <RootStack.Screen name="SafetyReviewDetailScreen" component={SafetyReviewDetailScreen} />

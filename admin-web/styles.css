@@ -229,3 +229,8 @@ tr.click:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; 
 .choice h3 { margin: 0 0 2px; }
 .choice p { margin: 0; }
 .icon.big { width: 34px; height: 34px; color: var(--brand); flex: none; }
+
+/* Wiji Pulse */
+.pulse-chart-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.chart.pulse-chart { height: auto; min-width: 640px; }
+.barlist.pulse-score .row { grid-template-columns: 130px 1fr 52px; }

@@ -128,7 +128,6 @@ const DriverProfilePanel = ({ uid, colors }: { uid: string; colors: any }) => {
       </View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" }}>
         {action("cash-outline", "Earnings", () => navigation.navigate("Tabs", { screen: "WalletScreen" }))}
-        {action("pulse-outline", "Wiji Pulse", () => navigation.navigate("PulseScreen"), "Income forecast & funding score")}
         {action("card-outline", "Payouts", () => navigation.navigate("PayoutSetupScreen"), payee ? `${payee.bankName || "Bank"} ••• ${payee.accountLast4}` : "Add your bank account")}
         {action(soonest && soonest.days <= 30 && !updating ? "warning-outline" : "document-text-outline", "My documents", () => navigation.navigate("DriverApplicationScreen"), docsSub)}
         {action("people-outline", "Trusted friends", () => navigation.navigate("TrustedContactsScreen"), "Who can follow your trips")}
