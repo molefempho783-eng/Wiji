@@ -113,6 +113,7 @@ const BusinessProfilePanel = ({ uid, colors }: { uid: string; colors: any }) => 
 
       <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" }}>
         {action("receipt-outline", "Orders", () => navigation.navigate("BusinessDashboardScreen", { tab: "orders" }))}
+        {action("pulse-outline", "Wiji Pulse", () => navigation.navigate("PulseScreen"), "Income forecast & funding score")}
         {action("restaurant-outline", "Menu", () => navigation.navigate("BusinessDashboardScreen", { tab: "menu" }))}
         {action("pricetag-outline", "Deals", () => navigation.navigate("BusinessDashboardScreen", { tab: "deals" }))}
         {action("settings-outline", "Shop settings", () => navigation.navigate("BusinessDashboardScreen", { tab: "settings" }))}
