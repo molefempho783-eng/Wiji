@@ -1,5 +1,5 @@
-// Wiji Pulse (business portal): income forecast, slow-week alerts and a funding-readiness score,
-// built from the payments this business has received through Wiji.
+// Wiji Pulse (business and driver portals): income forecast, slow-week alerts and a funding-readiness
+// score, built from the payments this business or driver has received through Wiji.
 import { db, collection, getDocs, query, where } from "../firebase.js";
 import { h, fill, chip } from "../ui.js";
 import { B, onBiz } from "./store.js";
@@ -48,7 +48,7 @@ function forecastChart(r) {
   return svg;
 }
 
-function printProfile(name, r, sample) {
+function printProfile(name, roleLabel, r, sample) {
   const win = window.open("", "_blank");
   if (!win) return alert("Allow pop-ups for this site to open your profile.");
   const rows = (list) => list.map(([a, b]) => `<tr><td>${esc(a)}</td><td style="text-align:right">${esc(b)}</td></tr>`).join("");
@@ -57,7 +57,7 @@ function printProfile(name, r, sample) {
 h1{margin:0 0 4px}h2{margin:28px 0 8px;font-size:16px}table{width:100%;border-collapse:collapse}td{padding:6px 0;border-bottom:1px solid #E4DFF0}
 .big{font-size:40px;font-weight:800;color:#6C2BD9}.muted{color:#5F5A75;font-size:13px}.flag{background:#FFF1D6;color:#A15C00;padding:8px 12px;border-radius:8px;font-weight:700}</style></head><body>
 ${sample ? '<p class="flag">SAMPLE DATA: this profile was made with sample payments to show how Wiji Pulse works.</p>' : ""}
-<h1>Wiji Pulse income profile</h1><div class="muted">${esc(name)} · Verified Wiji business · Generated ${esc(new Date().toLocaleDateString("en-ZA"))}</div>
+<h1>Wiji Pulse income profile</h1><div class="muted">${esc(name)} · ${esc(roleLabel)} · Generated ${esc(new Date().toLocaleDateString("en-ZA"))}</div>
 <h2>Funding-readiness score</h2><div class="big">${r.score}/100</div>
 <table>${rows(r.scoreParts.map((p) => [p.label, `${p.points}/${p.max}`]))}</table>
 <h2>Summary</h2><table>${rows([
@@ -80,7 +80,13 @@ function chartWrap(r) {
   return wrap;
 }
 
+/** Business portal page. */
 export function renderPulse(main) {
+  return renderPulseFor(main, { uid: () => B.uid, name: () => B.info?.name || "My business", roleLabel: "Verified Wiji business", onChange: (fn) => onBiz((what) => what === "info" && fn()) });
+}
+
+/** Pulse page for any payee. ctx = { uid(), name(), roleLabel, onChange(fn) → unsubscribe } */
+export function renderPulseFor(main, ctx) {
   let payments = null;
   let error = null;
   let sample = sessionStorage.getItem("pulse-sample") === "1";
@@ -95,7 +101,7 @@ export function renderPulse(main) {
     error = null;
     draw();
     try {
-      const snap = await getDocs(query(collection(db, "payments"), where("payeeUid", "==", B.uid), where("status", "==", "paid")));
+      const snap = await getDocs(query(collection(db, "payments"), where("payeeUid", "==", ctx.uid()), where("status", "==", "paid")));
       payments = snap.docs.map((d) => {
         const p = d.data();
         const at = p.paidAt?.toDate?.() || p.createdAt?.toDate?.() || null;
@@ -116,10 +122,10 @@ export function renderPulse(main) {
   };
 
   const draw = () => {
-    if (!B.uid || payments === null) return fill(body, h("div", { class: "boot", style: { minHeight: "40vh" } }, h("div", { class: "spinner" })));
+    if (!ctx.uid() || payments === null) return fill(body, h("div", { class: "boot", style: { minHeight: "40vh" } }, h("div", { class: "spinner" })));
     const real = computePulse(payments);
     const r = sample ? computePulse(samplePayments()) : real;
-    const name = sample ? "Sample business" : B.info?.name || "My business";
+    const name = sample ? "Sample account" : ctx.name();
 
     if (!r.enoughData) {
       return fill(body, h("div", { class: "panel", style: { maxWidth: "640px" } },
@@ -165,8 +171,8 @@ export function renderPulse(main) {
               h("div", { class: "track" }, h("div", { class: "fill", style: { width: `${(p.points / p.max) * 100}%` } })),
               h("b", { class: "mono" }, `${p.points}/${p.max}`)))),
           h("div", { style: { display: "flex", gap: "8px", marginTop: "14px", flexWrap: "wrap" } },
-            h("button", { class: "btn primary", onclick: () => printProfile(name, r, sample) }, "Print or save income profile (PDF)"),
-            h("button", { class: "btn", onclick: () => navigator.clipboard?.writeText(profileText(name, sample ? "Sample" : "Verified Wiji business", r, sample)).then(() => alert("Profile copied.")) }, "Copy as text")),
+            h("button", { class: "btn primary", onclick: () => printProfile(name, ctx.roleLabel, r, sample) }, "Print or save income profile (PDF)"),
+            h("button", { class: "btn", onclick: () => navigator.clipboard?.writeText(profileText(name, sample ? "Sample" : ctx.roleLabel, r, sample)).then(() => alert("Profile copied.")) }, "Copy as text")),
           h("p", { class: "small muted" }, "A summary of your Wiji income to share with a bank or funder. Only you decide who sees it."))),
       h("details", { class: "panel", style: { marginTop: "14px" } },
         h("summary", { style: { cursor: "pointer", fontWeight: 700 } }, "How Pulse works"),
@@ -175,5 +181,5 @@ export function renderPulse(main) {
   };
 
   load();
-  return onBiz((what) => what === "info" && draw());
+  return ctx.onChange ? ctx.onChange(draw) : undefined;
 }
