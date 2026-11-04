@@ -8,6 +8,7 @@ import { renderDrivers, renderDriver } from "./pages/drivers.js";
 import { renderBusinesses, renderBusiness } from "./pages/businesses.js";
 import { renderTeam } from "./pages/team.js";
 import { startPortal, stopPortal } from "./biz/portal.js";
+import { startDriverPortal, stopDriverPortal } from "./driver/portal.js";
 
 const root = document.getElementById("root");
 export const session = { user: null, role: null, biz: null };
@@ -57,7 +58,7 @@ function signInView(message) {
   root.replaceChildren(
     h("div", { class: "signin" },
       h("div", { class: "signin-card" }, logo("Wiji"),
-        h("p", { class: "muted", style: { margin: "10px 0 18px" } }, "For verified businesses and the Wiji team. Sign in with the email and password of your Wiji app account."),
+        h("p", { class: "muted", style: { margin: "10px 0 18px" } }, "For verified businesses, verified drivers and the Wiji team. Sign in with the email and password of your Wiji app account."),
         form)));
   email.focus();
 }
@@ -101,8 +102,9 @@ function staffNoAccessView(user) {
     h("div", { class: "signin" },
       h("div", { class: "signin-card" }, logo(),
         h("h2", { style: { marginTop: "16px" } }, "You don't have access yet"),
-        h("p", { class: "muted" }, `${user.email} doesn't have a verified business or a Wiji team role.`),
+        h("p", { class: "muted" }, `${user.email} doesn't have a verified business, a verified driver account or a Wiji team role.`),
         h("p", { class: "muted" }, "Run a business? In the Wiji app, go to Profile, choose Business and get verified. Then sign in here to manage orders, your menu and customers."),
+        h("p", { class: "muted" }, "Drive with Wiji? Once your driver application is approved in the app, sign in here to see your earnings and Wiji Pulse."),
         h("p", { class: "small muted", style: { marginTop: "14px" } }, h("b", {}, "Wiji team: "), "ask an admin to add you on the Team page."),
         h("p", { class: "small muted" }, "Owner: in the Firebase console, open Firestore → safetyTeam, add a document with this ID and a field role = \"admin\":"),
         h("p", { class: "small mono", style: { userSelect: "all", background: "var(--panel-2)", padding: "6px 8px", borderRadius: "8px" } }, user.uid),
@@ -227,6 +229,7 @@ window.addEventListener("hashchange", route);
 onAuthStateChanged(auth, async (user) => {
   stopStore();
   stopPortal();
+  stopDriverPortal();
   session.user = user;
   session.role = null;
   if (!user) return signInView();
@@ -249,7 +252,14 @@ onAuthStateChanged(auth, async (user) => {
       if (mode === "business") return startPortal(root, user, { staff: true });
       if (mode !== "admin") return chooseView(user);
     }
-    if (!staff) return noAccessView(user, biz);
+    if (!staff) {
+      // Verified driver: drivers/{uid}.verified is set by the Wiji team on approval
+      try {
+        const d = await getDoc(doc(db, "drivers", user.uid));
+        if (d.exists() && d.data().verified === true) return startDriverPortal(root, user, d.data());
+      } catch {}
+      return noAccessView(user, biz);
+    }
     document.title = "Wiji Admin";
     session.role = role;
     shell(hasShop);
