@@ -44,6 +44,7 @@ import PayScreen from "./Screens/Wallet/PayScreen";
 import ScanToPayScreen from "./Screens/Wallet/ScanToPayScreen";
 import PayoutSetupScreen from "./Screens/Wallet/PayoutSetupScreen";
 import DriverApplicationScreen from "./Screens/Rides/DriverApplicationScreen";
+import PromoterScreen from "./Screens/Users/PromoterScreen";
 import SafetyReviewListScreen from "./Screens/Rides/SafetyReviewListScreen";
 import SafetyReviewDetailScreen from "./Screens/Rides/SafetyReviewDetailScreen";
 import RideRequestScreen from "./Screens/Rides/RideRequestScreen";
@@ -420,6 +421,9 @@ const MainNavigator = () => {
     } else if (data?.type === 'driver') {
       // Driver application news, document reminders and expiry pauses
       navigationRef.current?.navigate('DriverApplicationScreen' as never);
+    } else if (data?.type === 'affiliate') {
+      // Promoter news: approved, declined, paused or paid
+      navigationRef.current?.navigate('PromoterScreen' as never);
     } else if (data?.type === 'staff_driver') {
       // Wiji team: a driver's documents to check, or an expiry
       if (data.uid) (navigationRef.current as any)?.navigate('SafetyReviewDetailScreen', { uid: String(data.uid) });
@@ -508,6 +512,7 @@ const MainNavigator = () => {
               <RootStack.Screen name="ScanToPayScreen" component={ScanToPayScreen} />
               <RootStack.Screen name="PayoutSetupScreen" component={PayoutSetupScreen} />
               <RootStack.Screen name="DriverApplicationScreen" component={DriverApplicationScreen} />
+              <RootStack.Screen name="PromoterScreen" component={PromoterScreen} />
               <RootStack.Screen name="SafetyReviewListScreen" component={SafetyReviewListScreen} />
               <RootStack.Screen name="SafetyReviewDetailScreen" component={SafetyReviewDetailScreen} />
               <RootStack.Screen name="RideRequestScreen" component={RideRequestScreen} />

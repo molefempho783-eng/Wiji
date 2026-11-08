@@ -2,26 +2,41 @@
 import { auth, db, signOut, collection, doc, getDoc, getDocs, query, where } from "../firebase.js";
 import { h, icon, fill, toMs, fmtDate } from "../ui.js";
 import { renderPulseFor } from "../biz/pulse.js";
+import { renderPromote, renderCommissions, renderApply } from "../affiliate/portal.js";
 
 const zar = (cents) => `R${(Number(cents || 0) / 100).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const D = { uid: null, name: "Driver" };
 
-const NAV = [
+const BASE_NAV = [
   ["pulse", "Wiji Pulse", "pulse"],
   ["earnings", "Earnings", "car"],
 ];
-const PAGES = {
+const BASE_PAGES = {
   pulse: (main) => renderPulseFor(main, { uid: () => D.uid, name: () => D.name, roleLabel: "Verified Wiji driver" }),
   earnings: renderEarnings,
 };
+// Drivers who are also Wiji promoters get the promoter pages here too
+const PROMOTER_NAV = [
+  ["promote", "Promote Wiji", "tag"],
+  ["commissions", "Commissions", "receipt"],
+];
+const PROMOTER_PAGES = {
+  promote: (main) => renderPromote(main, D.uid),
+  commissions: (main) => renderCommissions(main, D.uid),
+};
+let NAV = BASE_NAV;
+let PAGES = BASE_PAGES;
 
 let active = false;
 let main = null;
 let links = {};
 let cleanup = null;
 
-export function startDriverPortal(root, user, driver) {
+export function startDriverPortal(root, user, driver, aff = null) {
   active = true;
+  const promoter = aff?.status === "approved" || aff?.status === "frozen";
+  NAV = promoter ? [...BASE_NAV, ...PROMOTER_NAV] : BASE_NAV;
+  PAGES = promoter ? { ...BASE_PAGES, ...PROMOTER_PAGES } : BASE_PAGES;
   D.uid = user.uid;
   D.name = [driver?.firstName, driver?.lastName].filter(Boolean).join(" ") || "Driver";
   document.title = "Wiji Driver";
@@ -41,6 +56,8 @@ export function startDriverPortal(root, user, driver) {
         h("div", { class: "side-foot" },
           h("b", {}, D.name),
           h("div", {}, user.email),
+          promoter ? null : h("div", {}, h("a", { href: "#", onclick: (e) => (e.preventDefault(), renderApply(root, user, aff, () => location.reload())) },
+            aff?.status === "pending" ? "Promoter application: waiting" : "Become a Wiji promoter")),
           h("div", {}, h("a", { href: "#", onclick: (e) => (e.preventDefault(), signOut(auth)) }, "Sign out")))),
       main));
   if (!PAGES[location.hash.split("/")[1]]) location.hash = "#/pulse";

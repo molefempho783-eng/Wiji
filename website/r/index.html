@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en-ZA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>You're invited to Wiji</title>
+<meta name="description" content="Rides, payments and your neighbourhood, in one app. Download Wiji and sign up with your invite code.">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.png">
+<meta name="theme-color" content="#6C2BD9">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/site.css">
+<style>
+  .invite .wrap { grid-template-columns: 1fr; max-width: 640px; padding: 72px 0 80px; text-align: center; }
+  .invite .lede { margin-inline: auto; }
+  .code-box { display: inline-flex; align-items: center; gap: 12px; margin: 6px 0 28px; padding: 14px 16px 14px 22px; border-radius: 18px; background: rgba(255,255,255,.1); border: 1.5px dashed rgba(255,255,255,.45); }
+  .code-box b { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: clamp(24px, 6vw, 34px); letter-spacing: .08em; color: #fff; }
+  .code-box button { font: inherit; font-weight: 700; font-size: 14px; padding: 9px 14px; border-radius: 999px; border: 0; background: #fff; color: #3A1786; cursor: pointer; }
+  .steps { list-style: none; padding: 0; margin: 34px auto 0; display: grid; gap: 12px; max-width: 460px; text-align: left; }
+  .steps li { display: flex; gap: 14px; align-items: flex-start; color: #E6DDFB; font-size: 16px; }
+  .steps span { flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--mint); color: #0B2B26; font-weight: 800; display: grid; place-items: center; font-size: 14px; }
+  .fine { color: #CBBEF2; font-size: 13.5px; margin-top: 30px; }
+  .fine a { color: #fff; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap row">
+  <a class="brand" href="/"><img src="/logo.png" alt="" width="32" height="32"><span>Wiji</span></a>
+  <nav><a href="/#features">Features</a><a href="/#drive">Drive &amp; sell</a><a class="nav-cta" href="/admin/">Portal sign in</a></nav>
+</div></header>
+<main>
+  <section class="hero invite">
+    <div class="wrap">
+      <div>
+        <p class="eyebrow" id="eyebrow">You're invited</p>
+        <h1 id="title">Join <em>Wiji</em></h1>
+        <p class="lede" id="lede">Rides with verified drivers, card payments, local shops and your communities, in one app.</p>
+        <div id="codeWrap" hidden>
+          <p style="color:#E6DDFB;margin:0 0 10px">Your invite code</p>
+          <div class="code-box"><b id="code"></b><button type="button" id="copy">Copy</button></div>
+        </div>
+        <div><a class="btn mint" href="/download/wiji.apk" download="Wiji.apk">Download for Android</a></div>
+        <ol class="steps" id="steps" hidden>
+          <li><span>1</span><div>Download and open Wiji.</div></li>
+          <li><span>2</span><div>Tap sign up and type the code above in <b>Promoter code</b>.</div></li>
+          <li><span>3</span><div>Book a ride, pay a shop or join a community near you.</div></li>
+        </ol>
+        <p class="fine">Want your own code? <a href="/promoters/">See how the promoter programme works</a>, then apply in the Wiji app (Profile, then Promoter) or <a href="/admin/">in the portal</a>.</p>
+      </div>
+    </div>
+  </section>
+</main>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+  import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-functions.js";
+  import { firebaseConfig } from "/admin/js/config.js";
+
+  const code = decodeURIComponent((location.pathname.split("/")[2] || "")).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 15);
+  const $ = (id) => document.getElementById(id);
+
+  function showCode(c) {
+    $("code").textContent = c;
+    $("codeWrap").hidden = false;
+    $("steps").hidden = false;
+    $("copy").onclick = async () => {
+      try { await navigator.clipboard.writeText(c); $("copy").textContent = "Copied"; } catch { $("copy").textContent = c; }
+    };
+  }
+
+  if (code) {
+    showCode(code);
+    try {
+      const fn = httpsCallable(getFunctions(initializeApp(firebaseConfig), "us-central1"), "affiliateTrackClick");
+      const res = (await fn({ code })).data;
+      if (res?.valid) {
+        $("title").textContent = `${res.name} invited you to Wiji`;
+        document.title = `${res.name} invited you to Wiji`;
+      } else {
+        $("eyebrow").textContent = "This invite isn't active";
+        $("codeWrap").hidden = true;
+        $("steps").hidden = true;
+        $("lede").textContent = "That invite code isn't working any more, but you can still join Wiji. Rides with verified drivers, card payments, local shops and your communities, in one app.";
+      }
+    } catch {
+      // Offline or blocked: keep the code on screen so they can still use it
+    }
+  }
+</script>
+</body>
+</html>

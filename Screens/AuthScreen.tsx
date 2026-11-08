@@ -13,7 +13,8 @@ import {
   Platform 
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { auth, db } from "../firebaseConfig";
+import { auth, db, functions } from "../firebaseConfig";
+import { httpsCallable } from "firebase/functions";
 import { createUserWithEmailAndPassword, sendPasswordResetEmail, signInWithEmailAndPassword } from "firebase/auth";
 import { collection, doc, setDoc } from "firebase/firestore";
 import { useNavigation } from "@react-navigation/native";
@@ -29,6 +30,7 @@ const AuthScreen = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [username, setUsername] = useState("");
+  const [promoCode, setPromoCode] = useState("");
   const [isSignup, setIsSignup] = useState(true);
   const [error, setError] = useState("");
   const [showForgotPassword, setShowForgotPassword] = useState(false);
@@ -55,6 +57,20 @@ const AuthScreen = () => {
           setError("Password must be at least 6 characters.");
           return;
         }
+        // Optional promoter code: check it before creating the account so a typo can be fixed
+        const code = promoCode.trim().toUpperCase().replace(/\s+/g, "");
+        if (code) {
+          try {
+            const res = (await httpsCallable(functions, "affiliateCheckCode")({ code })).data as { valid?: boolean };
+            if (!res?.valid) {
+              setError("That promoter code doesn't exist. Check it, or leave it empty.");
+              return;
+            }
+          } catch {
+            setError("Couldn't check the promoter code. Check your connection, or leave it empty.");
+            return;
+          }
+        }
 
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         const user = userCredential.user;
@@ -68,6 +84,13 @@ const AuthScreen = () => {
           privacyAcceptedAt: new Date(),
           legalPolicyVersion: "2026-04-22",
         });
+
+        if (code) {
+          // The account exists now; a failed claim shouldn't stop sign-up
+          await httpsCallable(functions, "affiliateClaimReferral")({ code }).catch((e: any) =>
+            Alert.alert("Promoter code not added", String(e?.message || "Something went wrong.").replace(/^.*?:\s*/, ""))
+          );
+        }
 
         Alert.alert("Success", "Account created successfully!");
       } else {
@@ -161,6 +184,22 @@ const AuthScreen = () => {
                     value={username}
                     onChangeText={setUsername}
                     autoCapitalize="none"
+                  />
+                </View>
+              )}
+
+              {isSignup && !showForgotPassword && (
+                <View style={{ width: "100%", marginBottom: 15 }}>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Promoter code (optional)"
+                    placeholderTextColor="#A3A3A3"
+                    value={promoCode}
+                    onChangeText={(t) => setPromoCode(t.toUpperCase().replace(/[^A-Za-z0-9]/g, ""))}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    maxLength={15}
+                    accessibilityLabel="Promoter code, optional"
                   />
                 </View>
               )}

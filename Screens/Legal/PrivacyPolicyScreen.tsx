@@ -2,7 +2,7 @@
 import React from "react";
 import { Linking, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
-const EFFECTIVE = "20 October 2026";
+const EFFECTIVE = "5 November 2026";
 const URL = "https://communitychat-f3fb0.web.app/privacy/";
 const INTRO = "This Privacy Policy explains what personal information Wiji collects, why, who we share it with, and the rights you have under the Protection of Personal Information Act, 2013 (POPIA). DAYLY Technologies is the responsible party for your information.";
 const SECTIONS: { title: string; important?: boolean; blocks: string[] }[] = [
@@ -113,7 +113,19 @@ const SECTIONS: { title: string; important?: boolean; blocks: string[] }[] = [
     ]
   },
   {
-    "title": "13. Changes to this policy",
+    "title": "13. Promoters and referral codes",
+    "blocks": [
+      "This section covers the Wiji Promoter Programme. It applies on top of the rest of this policy.",
+      "If you apply to be a promoter, we collect: the name, email and details you give us about where you promote and your audience; your promoter code and link; the number of visits to your link and the number of sign-ups; your commissions and payouts; your bank name and account details for payouts, held through Paystack (we show only the bank and last 4 digits); and the notes and decisions of the Wiji team about your application and account.",
+      "If you enter a promoter code, we record which promoter's code you used, when, and your Wiji username. That promoter can then see your username, the kind of payment you made or received (for example a ride, an order or a group), its date and amount, and their commission. They do not see your card details, your location, your messages or what you bought. Promoters must keep this information private (see the Promoter Programme Terms).",
+      "When someone opens a promoter link, we count the visit. We do not build a profile of visitors from it.",
+      "To keep the programme fair, our systems automatically compare the cards and bank accounts used for payments with those of the promoter, to flag suspicious commissions for a person on the Wiji team to review. These checks do not decide anything alone. A person decides.",
+      "We keep promoter and commission records for up to 5 years, for tax, accounting, fraud and dispute reasons. If you close your promoter account, we stop collecting new promoter data about you.",
+      "You can ask to see, correct or delete your promoter information as set out in section 9, subject to what we must keep by law."
+    ]
+  },
+  {
+    "title": "14. Changes to this policy",
     "blocks": [
       "We will update this policy when our app or the law changes, show the new date at the top, and tell you in the app about important changes."
     ]

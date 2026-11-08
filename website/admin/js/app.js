@@ -9,6 +9,8 @@ import { renderBusinesses, renderBusiness } from "./pages/businesses.js";
 import { renderTeam } from "./pages/team.js";
 import { startPortal, stopPortal } from "./biz/portal.js";
 import { startDriverPortal, stopDriverPortal } from "./driver/portal.js";
+import { renderAffiliates } from "./pages/affiliates.js";
+import { getAffiliate, renderApply, startAffiliatePortal, stopAffiliatePortal } from "./affiliate/portal.js";
 
 const root = document.getElementById("root");
 export const session = { user: null, role: null, biz: null };
@@ -86,11 +88,20 @@ async function noAccessView(user, biz) {
         h("div", { class: "signin-card" }, logo("Wiji Business"),
           h("h2", { style: { marginTop: "16px" } }, status === "suspended" ? "Business portal closed" : "Not verified yet"),
           h("p", { class: "muted" }, BIZ_STATUS[status] || BIZ_STATUS.draft),
-          h("div", { class: "btn-row" }, h("button", { class: "btn primary", onclick: () => location.reload() }, "Check again"), h("button", { class: "btn", onclick: () => signOut(auth) }, "Sign out")))));
+          h("div", { class: "btn-row" }, h("button", { class: "btn primary", onclick: () => location.reload() }, "Check again"), h("button", { class: "btn", onclick: () => signOut(auth) }, "Sign out")),
+          promoterLink(user))));
     return;
   }
   return staffNoAccessView(user);
 }
+/** "Become a Wiji promoter" for anyone signed in without a promoter account. */
+function promoterLink(user) {
+  return h("p", { class: "small", style: { marginTop: "16px" } },
+    h("b", {}, "Influencer or promoter? "),
+    h("a", { href: "#", onclick: (e) => (e.preventDefault(), renderApply(root, user, null, () => location.reload())) }, "Become a Wiji promoter"),
+    " and earn when people you bring in use Wiji.");
+}
+
 function staffNoAccessView(user) {
   const btn = h("button", { class: "btn primary" }, "I'm the owner: make me admin");
   btn.onclick = () =>
@@ -105,6 +116,7 @@ function staffNoAccessView(user) {
         h("p", { class: "muted" }, `${user.email} doesn't have a verified business, a verified driver account or a Wiji team role.`),
         h("p", { class: "muted" }, "Run a business? In the Wiji app, go to Profile, choose Business and get verified. Then sign in here to manage orders, your menu and customers."),
         h("p", { class: "muted" }, "Drive with Wiji? Once your driver application is approved in the app, sign in here to see your earnings and Wiji Pulse."),
+        h("p", { class: "muted" }, "Influencer or promoter? ", h("a", { href: "#", onclick: (e) => (e.preventDefault(), renderApply(root, user, null, () => location.reload())) }, "Become a Wiji promoter"), " and earn when people you bring in use Wiji."),
         h("p", { class: "small muted", style: { marginTop: "14px" } }, h("b", {}, "Wiji team: "), "ask an admin to add you on the Team page."),
         h("p", { class: "small muted" }, "Owner: in the Firebase console, open Firestore → safetyTeam, add a document with this ID and a field role = \"admin\":"),
         h("p", { class: "small mono", style: { userSelect: "all", background: "var(--panel-2)", padding: "6px 8px", borderRadius: "8px" } }, user.uid),
@@ -156,6 +168,7 @@ const NAV = [
   ["alerts", "Alerts", "alert"],
   ["drivers", "Drivers", "car"],
   ["businesses", "Businesses", "store"],
+  ["affiliates", "Promoters", "tag"],
   ["team", "Team", "team"],
 ];
 let main;
@@ -213,6 +226,7 @@ function route() {
     alerts: () => renderAlerts(main),
     drivers: () => (id ? renderDriver(main, decodeURIComponent(id)) : renderDrivers(main)),
     businesses: () => (id ? renderBusiness(main, decodeURIComponent(id)) : renderBusinesses(main)),
+    affiliates: () => renderAffiliates(main, session),
     team: () => renderTeam(main, session),
     mybusiness: () => renderMyBusiness(main),
   };
@@ -230,6 +244,7 @@ onAuthStateChanged(auth, async (user) => {
   stopStore();
   stopPortal();
   stopDriverPortal();
+  stopAffiliatePortal();
   session.user = user;
   session.role = null;
   if (!user) return signInView();
@@ -254,10 +269,14 @@ onAuthStateChanged(auth, async (user) => {
     }
     if (!staff) {
       // Verified driver: drivers/{uid}.verified is set by the Wiji team on approval
+      const aff = await getAffiliate(user.uid);
       try {
         const d = await getDoc(doc(db, "drivers", user.uid));
-        if (d.exists() && d.data().verified === true) return startDriverPortal(root, user, d.data());
+        if (d.exists() && d.data().verified === true) return startDriverPortal(root, user, d.data(), aff);
       } catch {}
+      // Promoters: approved (or frozen) get their portal; pending or declined see their application
+      if (aff?.status === "approved" || aff?.status === "frozen") return startAffiliatePortal(root, user, aff);
+      if (aff?.status === "pending" || aff?.status === "declined") return renderApply(root, user, aff, null);
       return noAccessView(user, biz);
     }
     document.title = "Wiji Admin";

@@ -11,6 +11,7 @@ export type RootStackParamList = {
     ScanToPayScreen: undefined;
     PayoutSetupScreen: undefined;
     DriverApplicationScreen: undefined;
+    PromoterScreen: undefined;
     SafetyReviewListScreen: undefined;
     SafetyReviewDetailScreen: { uid: string };
     RideRequestScreen: undefined;

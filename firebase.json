@@ -73,6 +73,12 @@
     ],
     "cleanUrls": true,
     "trailingSlash": true,
+    "rewrites": [
+      {
+        "source": "/r/**",
+        "destination": "/r/index.html"
+      }
+    ],
     "redirects": [
       {
         "source": "/terms.html",
