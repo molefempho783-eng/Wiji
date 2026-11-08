@@ -654,6 +654,27 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    /* ---------- Affiliate programme ---------- */
+    // Promoters see their own application, referrals, commissions and payouts; the Wiji team sees all.
+    // Only Cloud Functions write these (affiliates.ts). affiliateCodes stays private (catch-all).
+    match /affiliates/{uid} {
+      allow read: if isSelf(uid) || isStaff();
+      allow write: if false;
+    }
+    match /referrals/{referredUid} {
+      allow read: if isStaff() || isSelf(referredUid)
+        || (isSignedIn() && resource.data.affiliateUid == request.auth.uid);
+      allow write: if false;
+    }
+    match /affiliateLedger/{entryId} {
+      allow read: if isStaff() || (isSignedIn() && resource.data.affiliateUid == request.auth.uid);
+      allow write: if false;
+    }
+    match /affiliatePayouts/{payoutId} {
+      allow read: if isStaff() || (isSignedIn() && resource.data.affiliateUid == request.auth.uid);
+      allow write: if false;
+    }
+
     /* ---------- Catch-all ---------- */
     match /{document=**} {
       allow read, write: if false;

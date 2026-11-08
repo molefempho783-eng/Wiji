@@ -8,6 +8,7 @@ Writes: website/index.html is NOT touched (hand-written home page);
 import html, json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import content as C
+import promoter_content as PC
 
 ROOT = sys.argv[1] if len(sys.argv) > 1 else "."
 WEB = os.path.join(ROOT, "website")
@@ -48,7 +49,7 @@ def footer():
     <div><a class="brand" href="/"><img src="/logo.png" alt="" width="28" height="28"><span>Wiji</span></a>
       <p class="muted">Rides, payments and your neighbourhood, in one app.<br>Run by {C.OPERATOR}, Pretoria.</p></div>
     <div class="foot-links">
-      <a href="/terms/">Terms and Conditions</a><a href="/privacy/">Privacy Policy</a>
+      <a href="/terms/">Terms and Conditions</a><a href="/privacy/">Privacy Policy</a><a href="/promoters/">Promoter programme</a>
       <a href="/delete-account/">Delete your account</a><a href="/admin/">Business &amp; team portal</a>
       <a href="mailto:{C.EMAIL}">Contact us</a></div>
   </div>
@@ -78,7 +79,7 @@ def page(title, desc, body, path):
 </html>
 """
 
-def legal_page(title, intro, sections, path, desc, highlight=()):
+def legal_page(title, intro, sections, path, desc, highlight=(), effective=None):
     strip = lambda t: html.escape(re.sub(r"^\d+\.\s*", "", t))
     toc = "".join('<li><a href="#' + slug(t) + '">' + strip(t) + "</a></li>" for t, _ in sections)
     secs = "".join(
@@ -89,7 +90,7 @@ def legal_page(title, intro, sections, path, desc, highlight=()):
   <div class="legal-head">
     <p class="eyebrow">Wiji legal</p>
     <h1>{html.escape(title)}</h1>
-    <p class="muted">Effective {C.EFFECTIVE} · {C.OPERATOR}</p>
+    <p class="muted">Effective {effective or C.EFFECTIVE} · {C.OPERATOR}</p>
     {"<p class='lede'>" + linkify(intro) + "</p>" if intro else ""}
   </div>
   <div class="legal-grid">
@@ -109,7 +110,15 @@ def write(rel, text):
 write("website/terms/index.html", legal_page("Terms and Conditions", C.TERMS_INTRO, C.TERMS, "/terms/",
       "The terms for using Wiji: rides, payments, shops, communities and safety.", C.HIGHLIGHT))
 write("website/privacy/index.html", legal_page("Privacy Policy", C.PRIVACY_INTRO, C.PRIVACY, "/privacy/",
-      "How Wiji collects, uses and protects your personal information under POPIA."))
+      "How Wiji collects, uses and protects your personal information under POPIA.", effective=PC.PROMOTER_EFFECTIVE))
+write("website/promoters/terms/index.html", legal_page("Promoter Programme Terms", PC.PROMOTER_INTRO, PC.PROMOTER_TERMS, "/promoters/terms/",
+      "The full rules of the Wiji Promoter Programme: who can join, what you earn, when you are paid and the rules to follow.", PC.PROMOTER_HIGHLIGHT, effective=PC.PROMOTER_EFFECTIVE))
+def promoters_page():
+    body = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "promoters_body.html"), encoding="utf-8").read()
+    for k, v in dict(RATE=PC.PROGRAM["rate"], HOLD=PC.PROGRAM["hold"], PAYER=PC.PROGRAM["payer"], PAYEE=PC.PROGRAM["payee"], MIN=PC.PROGRAM["minimum"], CLAIM=PC.PROGRAM["claim"], EMAIL=C.EMAIL).items():
+        body = body.replace("__" + k + "__", str(v))
+    return page("Wiji Promoter Programme · Earn by sharing Wiji", "Get your own code and link, and earn a share of what Wiji earns when the people you bring in use the app. Free to join.", body, "/promoters/")
+write("website/promoters/index.html", promoters_page())
 write("website/delete-account/index.html", legal_page("Delete your Wiji account", "You can ask us to delete your Wiji account and personal information at any time. Here's how, and what happens to your data.", C.DELETE, "/delete-account/",
       "How to delete your Wiji account and what data is removed or kept."))
 
@@ -172,15 +181,15 @@ const styles = StyleSheet.create({
 });
 """
 
-def tsx(name, title, url, intro, sections, highlight=()):
+def tsx(name, title, url, intro, sections, highlight=(), effective=None):
     data = [{"title": t, **({"important": True} if t in highlight else {}), "blocks": b} for t, b in sections]
     return (TSX.replace("__NAME__", name).replace("__TITLE__", title)
-            .replace("__EFFECTIVE__", json.dumps(C.EFFECTIVE)).replace("__URL__", json.dumps(url))
+            .replace("__EFFECTIVE__", json.dumps(effective or C.EFFECTIVE)).replace("__URL__", json.dumps(url))
             .replace("__INTRO__", json.dumps(intro, ensure_ascii=False))
             .replace("__SECTIONS__", json.dumps(data, indent=2, ensure_ascii=False)))
 
 write("Screens/Legal/TermsAndConditionsScreen.tsx", tsx("TermsAndConditionsScreen", "Terms and Conditions", C.SITE + "/terms/", C.TERMS_INTRO, C.TERMS, C.HIGHLIGHT))
-write("Screens/Legal/PrivacyPolicyScreen.tsx", tsx("PrivacyPolicyScreen", "Privacy Policy", C.SITE + "/privacy/", C.PRIVACY_INTRO, C.PRIVACY))
+write("Screens/Legal/PrivacyPolicyScreen.tsx", tsx("PrivacyPolicyScreen", "Privacy Policy", C.SITE + "/privacy/", C.PRIVACY_INTRO, C.PRIVACY, effective=PC.PROMOTER_EFFECTIVE))
 
 # ---------- home + 404 ----------
 HERE = os.path.dirname(os.path.abspath(__file__))

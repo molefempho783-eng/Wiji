@@ -15,6 +15,8 @@ import axios, { AxiosError } from "axios";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { onOrderPaid, orderForPayment } from "./shop.js";
 import { onGroupSubscriptionPaid } from "./groupSubscriptions.js";
+import { creditAffiliatesForPayment, reverseAffiliateCommissions } from "./affiliates.js";
+import { handleAffiliateTransfer } from "./affiliatePayouts.js";
 
 const PAYSTACK = "https://api.paystack.co";
 const CURRENCY = "ZAR";
@@ -193,6 +195,10 @@ export async function applyTransaction(tx: any): Promise<any> {
   if (firstPaid && p.groupSub) {
     await onGroupSubscriptionPaid(reference, p, tx).catch((e) => logger.error("onGroupSubscriptionPaid failed", e?.message));
   }
+  // Promoters who referred the payer or the person paid earn their share of Wiji's fee
+  if (firstPaid) {
+    await creditAffiliatesForPayment(reference, p, tx);
+  }
   // Tell whoever was paid (orders and group subscriptions send their own, more specific notifications)
   if (firstPaid && p.payeeUid && !p.orderId && !p.groupSub) {
     const who = String(p.payerName || "Someone");
@@ -215,6 +221,7 @@ export async function refundPayment(reference: string, reason: string) {
   if (!pay || pay.status !== "paid") return { refunded: false };
   const r = await paystack<any>("post", "/refund", { transaction: reference, merchant_note: reason.slice(0, 200) });
   await ref.update({ status: "refunded", refund: { id: r?.id || null, status: r?.status || "pending", reason, at: FieldValue.serverTimestamp() } });
+  await reverseAffiliateCommissions(reference, reason);
   return { refunded: true };
 }
 
@@ -434,6 +441,9 @@ export const paystackWebhook = onRequest(async (req, res) => {
       // Re-verify with Paystack rather than trusting the payload alone.
       const tx = await paystack<any>("get", `/transaction/verify/${encodeURIComponent(event.data.reference)}`);
       await applyTransaction(tx);
+    } else if (typeof event?.event === "string" && event.event.startsWith("transfer.")) {
+      // Promoter payouts: Paystack tells us how a transfer ended (re-verified inside)
+      await handleAffiliateTransfer(event);
     }
     res.status(200).send("ok");
   } catch (e: any) {

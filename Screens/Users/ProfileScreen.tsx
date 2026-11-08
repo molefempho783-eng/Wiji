@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -12,6 +12,8 @@ import {
   Switch,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
+import CoachTour, { TourStep } from "../../components/CoachTour";
+import PromoterCodeCard from "./PromoterCodeCard";
 
 import { getAuth, signOut } from "firebase/auth";
 import { removePushTokenFromUser } from "../../hooks/useRegisterPushToken";
@@ -19,6 +21,7 @@ import { isBootstrapAdmin, isSafetyStaff } from "../../services/drivers";
 import { clearCaches } from "../../services/cache";
 import BusinessProfilePanel from "./BusinessProfilePanel";
 import DriverProfilePanel from "./DriverProfilePanel";
+import PromoterProfilePanel from "./PromoterProfilePanel";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { db, storage } from "../../firebaseConfig";
 import { getDownloadURL, ref, uploadBytes, deleteObject } from "firebase/storage";
@@ -56,7 +59,12 @@ const ProfileScreen = () => {
   const [isProfileDataLoading, setIsProfileDataLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
   const [isStaff, setIsStaff] = useState(false);
-  const [accountType, setAccountType] = useState<"personal" | "business" | "driver">("personal");
+  const [accountType, setAccountType] = useState<"personal" | "business" | "driver" | "promoter">("personal");
+  // Targets for the first-visit walkthrough
+  const topButtonsRef = useRef<View>(null);
+  const accountTypeRef = useRef<View>(null);
+  const strengthRef = useRef<View>(null);
+  const picRef = useRef<Image>(null);
   useEffect(() => {
     isSafetyStaff(true).then((v) => setIsStaff(v || isBootstrapAdmin())).catch(() => setIsStaff(isBootstrapAdmin()));
   }, []);
@@ -144,7 +152,7 @@ const ProfileScreen = () => {
         setAboutMe(data.aboutMe || "");
         setProfilePic(data.profilePic || null);
         setProfilePhotos(Array.isArray(data.profilePhotos) ? data.profilePhotos : []);
-        setAccountType(data.accountType === "business" || data.accountType === "driver" ? data.accountType : "personal");
+        setAccountType(["business", "driver", "promoter"].includes(data.accountType) ? data.accountType : "personal");
       }
     } catch (error: any) {
       console.error("Error fetching profile:", error);
@@ -294,6 +302,43 @@ const ProfileScreen = () => {
   }
 
 
+  // First-visit walkthrough: what you can do on this screen
+  const profileTour: TourStep[] = [
+    {
+      icon: "person-circle",
+      title: "Your profile",
+      body: "This is where you manage your Wiji account: your photo and details, what you use Wiji for, and how the app looks. Here's a quick look around.",
+    },
+    {
+      icon: "help-circle",
+      target: topButtonsRef,
+      title: "Help and theme",
+      body: "The question mark replays the Wiji walkthrough any time, and the moon switches between light and dark mode.",
+    },
+    {
+      icon: "swap-horizontal",
+      target: accountTypeRef,
+      title: "Choose how you use Wiji",
+      body: "Personal is for chatting, riding and paying. Business lets you sell and take orders. Driver lets you drive and earn. Promoter gives you a code to share Wiji and earn when people you bring in use it. You can switch any time.",
+    },
+    ...(accountType === "personal"
+      ? ([
+          {
+            icon: "ribbon",
+            target: strengthRef,
+            title: "Profile strength",
+            body: "The bar shows how complete your profile is. Add a photo, your username and a short About me so people know who they are talking to.",
+          },
+          {
+            icon: "camera",
+            target: picRef,
+            title: "Your photo",
+            body: "Tap your picture to change it. Further down you can add up to 6 photos, edit your username and About me, and tap Save Profile when you are done. Log out is at the bottom.",
+          },
+        ] as TourStep[])
+      : []),
+  ];
+
   return (
     <SafeAreaView style={globalStyles.safeArea}>
       <ScrollView contentContainerStyle={styles.scrollViewContent}>
@@ -311,8 +356,8 @@ const ProfileScreen = () => {
           >
             <Ionicons name="arrow-back" size={FONT_SIZES.xxlarge} color={colors.textPrimary} />
           </TouchableOpacity>
-          <Text style={[styles.headerTitle, { flex: 1 }]}>{accountType === "business" ? "Business profile" : accountType === "driver" ? "Driver profile" : "Edit Profile"}</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Text style={[styles.headerTitle, { flex: 1 }]}>{accountType === "business" ? "Business profile" : accountType === "driver" ? "Driver profile" : accountType === "promoter" ? "Promoter profile" : "Edit Profile"}</Text>
+          <View ref={topButtonsRef} collapsable={false} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             {isStaff ? (
               <TouchableOpacity
                 onPress={() => navigation.navigate("SafetyReviewListScreen")}
@@ -385,13 +430,14 @@ const ProfileScreen = () => {
         </View>
 
         {/* Personal or business account: business mode swaps the profile for the shop's settings */}
-        <View style={{ marginBottom: 18 }}>
+        <View ref={accountTypeRef} collapsable={false} style={{ marginBottom: 18 }}>
           <Text style={[styles.label, { color: colors.text }]}>Account type</Text>
-          <View style={{ flexDirection: "row", gap: 10 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", rowGap: 10 }}>
             {([
               { key: "personal", icon: "person-outline", title: "Personal", sub: "Chat, ride, pay" },
               { key: "business", icon: "storefront-outline", title: "Business", sub: "Sell, take orders" },
               { key: "driver", icon: "car-sport-outline", title: "Driver", sub: "Drive and earn" },
+              { key: "promoter", icon: "megaphone-outline", title: "Promoter", sub: "Share Wiji, earn" },
             ] as const).map((o) => {
               const on = accountType === o.key;
               return (
@@ -409,7 +455,7 @@ const ProfileScreen = () => {
                     }
                   }}
                   style={{
-                    flex: 1,
+                    width: "48.5%",
                     padding: 12,
                     borderRadius: 14,
                     borderWidth: 2,
@@ -430,9 +476,12 @@ const ProfileScreen = () => {
           <BusinessProfilePanel uid={user.uid} colors={colors} />
         ) : accountType === "driver" && user ? (
           <DriverProfilePanel uid={user.uid} colors={colors} />
+        ) : accountType === "promoter" && user ? (
+          <PromoterProfilePanel uid={user.uid} colors={colors} />
         ) : (<>
+        <PromoterCodeCard uid={user.uid} colors={colors} created={(user as any)?.metadata?.creationTime} />
         {/* Tinder-style profile completion progress */}
-        <View style={[styles.progressCard, { backgroundColor: colors.cardBackground || colors.background, borderColor: colors.borderColor }]}>
+        <View ref={strengthRef} collapsable={false} style={[styles.progressCard, { backgroundColor: colors.cardBackground || colors.background, borderColor: colors.borderColor }]}>
           <View style={styles.progressHeader}>
             <Text style={[styles.progressTitle, { color: colors.text }]}>Profile strength</Text>
             <Text style={[styles.progressCount, { color: colors.primary }]}>{completedCount}/{totalSteps}</Text>
@@ -466,6 +515,7 @@ const ProfileScreen = () => {
           disabled={loading}
         >
           <Image
+            ref={picRef}
             source={profilePic ? { uri: profilePic } : DEFAULT_AVATAR}
             style={[styles.profilePic, { borderColor: colors.primary }]}
           />
@@ -573,6 +623,7 @@ const ProfileScreen = () => {
           )}
         </TouchableOpacity>
       </ScrollView>
+      <CoachTour id="profile" after="chats" steps={profileTour} delay={900} />
     </SafeAreaView>
   );
 };

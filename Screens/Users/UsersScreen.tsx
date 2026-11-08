@@ -671,7 +671,7 @@ const exploreUsers = useMemo(() => {
             icon: "person-circle",
             target: headerRef,
             title: "Your profile",
-            body: "Tap your name to edit your profile, switch light or dark mode, replay the tour or log out. The bar shows how complete your profile is.",
+            body: "Tap your name to open your profile. Change your photo, username and About me, and switch between Personal, Business, Driver and Promoter to sell, drive or earn by sharing Wiji. You can also switch light or dark mode, replay this tour or log out. The bar shows how complete your profile is.",
           },
           {
             icon: "people",

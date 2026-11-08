@@ -894,3 +894,5 @@ export * from "./business.js";
 export * from "./admin.js";
 export * from "./shop.js";
 export * from "./groupSubscriptions.js";
+export * from "./affiliates.js";
+export * from "./affiliatePayouts.js";

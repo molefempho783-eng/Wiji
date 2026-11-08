@@ -221,7 +221,8 @@ PRIVACY = [
     ("12. Decisions about drivers and businesses", [
         "Driver and business approvals are made by people on the Wiji safety team, not by an automated system alone.",
     ]),
-    ("13. Changes to this policy", [
+    __import__("promoter_content").PRIVACY_PROMOTER_SECTION,
+    ("14. Changes to this policy", [
         "We will update this policy when our app or the law changes, show the new date at the top, and tell you in the app about important changes.",
     ]),
 ]

@@ -2,7 +2,7 @@
 // First-time "coach marks": dims the screen, spotlights one button at a time and explains it.
 // Each tour is shown once per install (AsyncStorage) and only while its screen is focused.
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Modal, View, Text, TouchableOpacity, StyleSheet, useWindowDimensions } from "react-native";
+import { Modal, Platform, StatusBar, View, Text, TouchableOpacity, StyleSheet, useWindowDimensions } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useIsFocused } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
@@ -22,7 +22,7 @@ export interface TourStep {
   getRect?: () => Promise<Rect | null>;
 }
 
-export const ALL_TOURS = ["tabs", "communities", "chats", "map", "calls", "wallet", "rides"] as const;
+export const ALL_TOURS = ["tabs", "communities", "chats", "map", "calls", "wallet", "rides", "profile"] as const;
 const storageKey = (id: string) => `@wiji_tour_seen_${id}`;
 
 // Tiny event bus so a tour can start right after the one it waits for finishes.
@@ -147,12 +147,16 @@ const CoachTour: React.FC<Props> = ({ id, steps, after, delay = 700 }) => {
   const oy = origin?.y ?? 0;
   const OW = origin?.width || W;
   const OH = origin?.height || H;
+  // Android: buttons are measured from just below the status bar, but this overlay is an edge-to-edge
+  // modal that starts at the very top of the screen, so the spotlight would sit a status bar too high.
+  // When the overlay reports no offset of its own, move the spotlight down by the status bar height.
+  const shiftY = Platform.OS === "android" && Math.abs(oy) < 1 ? StatusBar.currentHeight ?? 0 : 0;
   // Wait for the overlay to be measured before drawing a spotlight, so it never flashes in the wrong place
   const hole =
     rect && origin
       ? {
           x: Math.max(0, rect.x - ox - PAD),
-          y: Math.max(0, rect.y - oy - PAD),
+          y: Math.max(0, rect.y - oy + shiftY - PAD),
           w: Math.min(OW, rect.width + PAD * 2),
           h: rect.height + PAD * 2,
         }
