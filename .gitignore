@@ -55,3 +55,9 @@ __pycache__/
 
 # App builds served by Firebase Hosting (too large for Git)
 website/download/*.apk
+
+# Emulator start script logs
+emulator-log.txt
+emulator-out.txt
+emulator-err.txt
+emulator-diagnose.txt

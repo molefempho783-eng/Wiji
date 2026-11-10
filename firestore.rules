@@ -654,6 +654,77 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    /* ---------- Municipal problem reports (map) ---------- */
+    // Public report: anyone signed in can read. Anonymous reports carry no user id at all;
+    // the reporter is recorded only in municipalReportOwners/{id} (reporter + Wiji team can read).
+    function isReportOwner(reportId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/municipalReportOwners/$(reportId))
+        && get(/databases/$(database)/documents/municipalReportOwners/$(reportId)).data.uid == request.auth.uid;
+    }
+    // A vote list may only change by the caller adding or removing their own uid
+    function onlyMyVote(field) {
+      let n = request.resource.data.get(field, []);
+      let o = resource.data.get(field, []);
+      return n is list
+        && n.size() <= o.size() + 1
+        && n.toSet().difference(o.toSet()).hasOnly([request.auth.uid])
+        && o.toSet().difference(n.toSet()).hasOnly([request.auth.uid]);
+    }
+    match /municipalReports/{reportId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['category', 'title', 'description', 'photoUrl', 'latitude', 'longitude', 'location',
+             'anonymous', 'reporterUid', 'reporterName', 'status', 'affectedBy', 'fixedVotes', 'createdAt', 'updatedAt'])
+        && request.resource.data.category in ['power', 'pothole', 'water', 'sewage', 'streetlight', 'traffic-light', 'dumping', 'infrastructure', 'other']
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 3 && request.resource.data.title.size() <= 80
+        && (!('description' in request.resource.data) || (request.resource.data.description is string && request.resource.data.description.size() <= 500))
+        && (!('photoUrl' in request.resource.data) || request.resource.data.photoUrl is string)
+        && request.resource.data.latitude is number
+        && request.resource.data.longitude is number
+        && request.resource.data.location is string
+        && request.resource.data.status == 'open'
+        && request.resource.data.affectedBy == []
+        && request.resource.data.fixedVotes == []
+        && request.resource.data.createdAt == request.time
+        && (
+          (request.resource.data.anonymous == true && !request.resource.data.keys().hasAny(['reporterUid', 'reporterName']))
+          || (request.resource.data.anonymous == false && request.resource.data.reporterUid == request.auth.uid)
+        )
+        // the private owner record must be written in the same batch
+        && getAfter(/databases/$(database)/documents/municipalReportOwners/$(reportId)).data.uid == request.auth.uid;
+
+      allow update: if isSignedIn() && (
+        // Wiji team: status, notes, anything
+        isStaff()
+        // Reporter: mark fixed or reopen
+        || (isReportOwner(reportId)
+            && changedOnly(['status', 'fixedAt', 'updatedAt'])
+            && request.resource.data.status in ['open', 'fixed'])
+        // Anyone: "affects me too" / "it's fixed" votes; enough fixed votes close it
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['affectedBy', 'fixedVotes', 'status', 'fixedAt', 'updatedAt'])
+            && onlyMyVote('affectedBy')
+            && onlyMyVote('fixedVotes')
+            && (request.resource.data.status == resource.data.status
+                || (request.resource.data.status == 'fixed' && request.resource.data.fixedVotes.size() >= 3)))
+      );
+
+      allow delete: if isStaff() || isReportOwner(reportId);
+    }
+    match /municipalReportOwners/{reportId} {
+      allow read: if isStaff() || (isSignedIn() && resource.data.uid == request.auth.uid);
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['uid', 'createdAt'])
+        && request.resource.data.uid == request.auth.uid
+        // only alongside a brand-new report, so nobody can claim someone else's
+        && !exists(/databases/$(database)/documents/municipalReports/$(reportId))
+        && existsAfter(/databases/$(database)/documents/municipalReports/$(reportId));
+      allow update: if false;
+      allow delete: if isStaff() || (isSignedIn() && resource.data.uid == request.auth.uid);
+    }
+
     /* ---------- Affiliate programme ---------- */
     // Promoters see their own application, referrals, commissions and payouts; the Wiji team sees all.
     // Only Cloud Functions write these (affiliates.ts). affiliateCodes stays private (catch-all).

@@ -1,4 +1,4 @@
-// Wiji Admin: sign-in gate, layout and routing (#/overview, #/alerts, #/drivers[/uid], #/businesses[/uid], #/team).
+// Wiji Admin: sign-in gate, layout and routing (#/overview, #/alerts, #/drivers[/uid], #/businesses[/uid], #/reports, #/team).
 import { auth, db, doc, getDoc, onAuthStateChanged, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, call } from "./firebase.js";
 import { h, icon, toast, busy } from "./ui.js";
 import { startStore, stopStore, subscribe, counts } from "./store.js";
@@ -7,6 +7,7 @@ import { renderAlerts } from "./pages/alerts.js";
 import { renderDrivers, renderDriver } from "./pages/drivers.js";
 import { renderBusinesses, renderBusiness } from "./pages/businesses.js";
 import { renderTeam } from "./pages/team.js";
+import { renderReports } from "./pages/reports.js";
 import { startPortal, stopPortal } from "./biz/portal.js";
 import { startDriverPortal, stopDriverPortal } from "./driver/portal.js";
 import { renderAffiliates } from "./pages/affiliates.js";
@@ -169,6 +170,7 @@ const NAV = [
   ["drivers", "Drivers", "car"],
   ["businesses", "Businesses", "store"],
   ["affiliates", "Promoters", "tag"],
+  ["reports", "Municipal reports", "map"],
   ["team", "Team", "team"],
 ];
 let main;
@@ -228,6 +230,7 @@ function route() {
     businesses: () => (id ? renderBusiness(main, decodeURIComponent(id)) : renderBusinesses(main)),
     affiliates: () => renderAffiliates(main, session),
     team: () => renderTeam(main, session),
+    reports: () => renderReports(main),
     mybusiness: () => renderMyBusiness(main),
   };
   try {

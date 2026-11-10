@@ -6,6 +6,7 @@
     "start": "expo start",
     "android": "expo run:android",
     "android:short-path": "powershell -ExecutionPolicy Bypass -File ./run-android-short-path.ps1",
+    "emulator": "powershell -ExecutionPolicy Bypass -File ./start-android.ps1",
     "ios": "expo run:ios",
     "web": "expo start --web",
     "build:web": "expo export --platform web",
