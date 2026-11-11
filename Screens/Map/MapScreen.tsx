@@ -57,6 +57,9 @@ import { httpsCallable } from 'firebase/functions';
 import * as ImagePicker from 'expo-image-picker';
 import { Video, ResizeMode } from 'expo-av';
 import CreateActivitySheet from './CreateActivitySheet';
+import CreateReportSheet from './CreateReportSheet';
+import ReportDetailSheet from './ReportDetailSheet';
+import { MunicipalReport, REPORT_STATUS, isReportOnMap, reportCategory } from './reports';
 import { TabView, TabBar } from 'react-native-tab-view';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -217,6 +220,12 @@ export default function MapScreen() {
   const [loading, setLoading] = useState(true);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [showCreateActivity, setShowCreateActivity] = useState(false);
+  /** Municipal problem reports (load shedding, potholes, leaks…) within 50 km */
+  const [reports, setReports] = useState<MunicipalReport[]>([]);
+  const [showCreateReport, setShowCreateReport] = useState(false);
+  const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
+  /** "+" button: choose between posting an activity and reporting a problem */
+  const [showAddChooser, setShowAddChooser] = useState(false);
   const [selectedActivity, setSelectedActivity] = useState<Activity | null>(null);
   const [showActivitiesList, setShowActivitiesList] = useState(false);
   const [showMemoryActivityPicker, setShowMemoryActivityPicker] = useState(false);
@@ -283,8 +292,10 @@ export default function MapScreen() {
   const activitiesForMap = activities.filter((a) => !isActivityExpired(a));
 
   const mapSpecialsForMap = mapSpecials.filter((s) => s.active !== false);
+  const reportsForMap = reports.filter(isReportOnMap);
+  const selectedReport = selectedReportId ? reports.find((r) => r.id === selectedReportId) || null : null;
   // Let custom markers draw, then stop tracking view changes (otherwise Android redraws them constantly and they flicker)
-  const markersKey = `${tabIndex}|${theme}|${activitiesForMap.map((a) => a.id).join(',')}|${mapBusinesses.map((b) => `${b.id}${b.isOpen}`).join(',')}|${mapSpecialsForMap.map((x) => x.id).join(',')}`;
+  const markersKey = `${tabIndex}|${theme}|${activitiesForMap.map((a) => a.id).join(',')}|${mapBusinesses.map((b) => `${b.id}${b.isOpen}`).join(',')}|${mapSpecialsForMap.map((x) => x.id).join(',')}|${reportsForMap.map((r) => `${r.id}${r.status}`).join(',')}`;
   const [trackMarkers, setTrackMarkers] = useState(true);
   useEffect(() => {
     setTrackMarkers(true);
@@ -559,6 +570,43 @@ export default function MapScreen() {
       }
     );
 
+    return () => unsubscribe();
+  }, [userLocation]);
+
+  // Nearby municipal problem reports (50 km): same latitude band query as activities, then haversine
+  useEffect(() => {
+    if (!userLocation) return;
+    const centerLat = userLocation.coords.latitude;
+    const centerLng = userLocation.coords.longitude;
+    const radiusDegrees = 0.45;
+    const q = query(
+      collection(db, 'municipalReports'),
+      where('latitude', '>=', centerLat - radiusDegrees),
+      where('latitude', '<=', centerLat + radiusDegrees)
+    );
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const list: MunicipalReport[] = [];
+        snapshot.docs.forEach((d) => {
+          const r = d.data();
+          if (!Number.isFinite(r.latitude) || !Number.isFinite(r.longitude)) return;
+          const distance = calculateDistance(centerLat, centerLng, r.latitude, r.longitude);
+          if (distance > 50) return;
+          list.push({
+            id: d.id,
+            ...(r as any),
+            affectedBy: Array.isArray(r.affectedBy) ? r.affectedBy : [],
+            fixedVotes: Array.isArray(r.fixedVotes) ? r.fixedVotes : [],
+            status: r.status || 'open',
+            distance: Math.round(distance * 10) / 10,
+          });
+        });
+        list.sort((a, b) => (a.distance || 0) - (b.distance || 0));
+        setReports(list);
+      },
+      (err) => console.error('Municipal reports snapshot error:', err)
+    );
     return () => unsubscribe();
   }, [userLocation]);
 
@@ -1421,6 +1469,28 @@ export default function MapScreen() {
           </Callout>
         </Marker>
       ))}
+      {reportsForMap.map((r) => {
+        const cat = reportCategory(r.category);
+        const fixed = r.status === 'fixed';
+        return (
+          <Marker
+            key={`report_${r.id}`}
+            coordinate={{ latitude: r.latitude, longitude: r.longitude }}
+            onPress={() => setSelectedReportId(r.id)}
+            tracksViewChanges={trackMarkers}
+            accessibilityLabel={`${cat.label}: ${r.title}`}
+          >
+            <View style={[localStyles.reportMarker, { backgroundColor: fixed ? '#9AA5B1' : cat.color }]}>
+              <Ionicons name={cat.icon as any} size={20} color="#FFFFFF" />
+              {fixed || r.status === 'in_progress' ? (
+                <View style={[localStyles.reportMarkerBadge, { backgroundColor: REPORT_STATUS[r.status].color }]}>
+                  <Ionicons name={fixed ? 'checkmark' : 'construct'} size={10} color="#FFFFFF" />
+                </View>
+              ) : null}
+            </View>
+          </Marker>
+        );
+      })}
       {mapBusinesses.map((b) => (
         <Marker
           key={`biz_${b.id}`}
@@ -1557,7 +1627,8 @@ export default function MapScreen() {
           <TouchableOpacity
             ref={tourAddRef}
             style={[localStyles.actionButton, { backgroundColor: colors.primary }]}
-            onPress={() => setShowCreateActivity(true)}
+            onPress={() => setShowAddChooser(true)}
+            accessibilityLabel="Post an activity or report a problem"
           >
             <Ionicons name="add" size={24} color="#FFFFFF" />
           </TouchableOpacity>
@@ -2514,6 +2585,57 @@ export default function MapScreen() {
           }, 350);
         }}
       />
+      {/* "+" chooser: activity or municipal problem report */}
+      <Modal visible={showAddChooser} transparent animationType="fade" onRequestClose={() => setShowAddChooser(false)}>
+        <TouchableOpacity style={localStyles.chooserOverlay} activeOpacity={1} onPress={() => setShowAddChooser(false)}>
+          <View style={[localStyles.chooserCard, { backgroundColor: colors.card, paddingBottom: modalBottomSafeSpace + 16 }]} onStartShouldSetResponder={() => true}>
+            <Text style={{ color: colors.text, fontSize: 18, fontWeight: '800', marginBottom: 12 }}>What do you want to add?</Text>
+            {[
+              { key: 'activity', icon: 'people', color: colors.primary, title: 'Post an activity', sub: 'Invite people nearby to do something with you', onPress: () => setShowCreateActivity(true) },
+              { key: 'report', icon: 'megaphone', color: '#E67E22', title: 'Report a problem', sub: 'Load shedding, potholes, leaks, broken streetlights… You can stay anonymous.', onPress: () => setShowCreateReport(true) },
+            ].map((o) => (
+              <TouchableOpacity
+                key={o.key}
+                style={[localStyles.chooserRow, { borderColor: colors.border }]}
+                accessibilityRole="button"
+                onPress={() => {
+                  setShowAddChooser(false);
+                  setTimeout(o.onPress, Platform.OS === 'ios' ? 350 : 0);
+                }}
+              >
+                <View style={[localStyles.chooserIcon, { backgroundColor: o.color }]}>
+                  <Ionicons name={o.icon as any} size={22} color="#FFFFFF" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: colors.text, fontWeight: '800', fontSize: 16 }}>{o.title}</Text>
+                  <Text style={{ color: colors.textSecondary, fontSize: 13, marginTop: 2 }}>{o.sub}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Report a municipal problem: What → Where → Review (no group chat) */}
+      <CreateReportSheet
+        visible={showCreateReport}
+        onClose={() => setShowCreateReport(false)}
+        userLocation={userLocation ? { lat: userLocation.coords.latitude, lng: userLocation.coords.longitude } : null}
+        onCreated={(r) => {
+          setTabIndex(0);
+          setFollowUser(false);
+          followUserRef.current = false;
+          setTimeout(() => {
+            isProgrammaticUpdateRef.current = true;
+            mapRef.current?.animateToRegion({ latitude: r.lat, longitude: r.lng, latitudeDelta: 0.01, longitudeDelta: 0.01 }, 900);
+          }, 350);
+        }}
+      />
+      {selectedReport ? (
+        <ReportDetailSheet report={selectedReport} onClose={() => setSelectedReportId(null)} bottomSpace={modalBottomSafeSpace} />
+      ) : null}
+
       <CoachTour
         id="map"
         after="tabs"
@@ -2522,13 +2644,13 @@ export default function MapScreen() {
           {
             icon: 'map',
             title: 'The Map',
-            body: 'Pins show activities: things people nearby want to do. Orange price tags are local deals. Tap any pin to see details and join.',
+            body: 'Round pins are activities: things people nearby want to do. Square pins are problems people reported, like potholes or power cuts. Orange price tags are local deals. Tap any pin for details.',
           },
           {
             icon: 'add',
             target: tourAddRef,
-            title: 'Post an activity',
-            body: "Tap + and finish the sentence \"I want to…\", then pick a time and place. People nearby can ask to join, and you plan it together in the activity chat.",
+            title: 'Post an activity or report a problem',
+            body: "Tap + to post an activity people nearby can join, or to report a problem like load shedding, a pothole or a burst pipe. Reports can be anonymous.",
           },
           {
             icon: 'car',
@@ -2764,6 +2886,58 @@ const localStyles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 3,
     elevation: 5,
+  },
+  reportMarker: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  reportMarkerBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chooserOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  chooserCard: {
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    padding: 16,
+  },
+  chooserRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 10,
+  },
+  chooserIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   calloutContainer: {
     width: 200,

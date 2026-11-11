@@ -76,6 +76,11 @@ service firebase.storage {
       allow read: if isSignedIn();
       allow write: if isSignedIn() && fileName.matches(request.auth.uid + '_.*') && isSmall() && request.resource.contentType.matches('image/.*');
     }
+    // Municipal report photos: random file names (no user id) so anonymous reports stay anonymous; no overwriting
+    match /municipal_reports/{fileName} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isSmall() && request.resource.contentType.matches('image/.*');
+    }
     // Public shop pictures: cover (copied by Cloud Functions) and menu photos (uploaded by the owner)
     match /business_public/{uid}/{allPaths=**} {
       allow read: if isSignedIn();
