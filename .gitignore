@@ -61,3 +61,6 @@ emulator-log.txt
 emulator-out.txt
 emulator-err.txt
 emulator-diagnose.txt
+
+# Local demo-data scripts (not part of the app)
+functions/scripts/seed-*.js
